@@ -1,8 +1,9 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
-import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown } from 'lucide-react';
+import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown, Square, Triangle } from 'lucide-react';
 import { io } from 'socket.io-client';
 import type { TypedSocket } from '../../types/socket';
+import { drawCircleBrush, drawSquareBrush, drawTriangleBrush, StrokePoint, BrushOptions } from '../../lib/brushUtils';
 
 let socket: TypedSocket | null = null;
 
@@ -49,16 +50,12 @@ const OPACITY_OPTIONS = [
   { name: '100%', value: 1.0 },
 ];
 
-// ReactSketchCanvas only supports 'round', 'butt', and 'square' line caps
-// For other effects, we'll need a custom solution later
+// Simplified brush types - only circle, square, and triangle
 const BRUSH_TYPES = [
-  { name: 'Round', value: 'round', description: 'Round brush tip' },
-  { name: 'Square', value: 'square', description: 'Square brush tip' },
-  { name: 'triangle', value: 'triangle', description: 'triangle brush tip' },
+  { name: 'Circle', value: 'circle', icon: Circle, description: 'Round brush tip' },
+  { name: 'Square', value: 'square', icon: Square, description: 'Square brush tip' },
+  { name: 'Triangle', value: 'triangle', icon: Triangle, description: 'Triangle brush tip' },
 ];
-
-// ReactSketchCanvas only supports basic line styles
-// More advanced brush styles would require custom canvas implementations
 
 interface DrawingState {
   color: string;
@@ -70,6 +67,8 @@ interface DrawingState {
 
 const TeacherWhiteboard: React.FC = () => {
   const canvasRef = useRef<ReactSketchCanvasRef | null>(null);
+  const customCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const customCtxRef = useRef<CanvasRenderingContext2D | null>(null);
 
   const [isLive, setIsLive] = useState(false);
   const [showStartModal, setShowStartModal] = useState(false);
@@ -83,7 +82,7 @@ const TeacherWhiteboard: React.FC = () => {
     color: COLORS[0].value,
     strokeWidth: STROKE_SIZES[2].value,
     opacity: OPACITY_OPTIONS[4].value,
-    brushType: BRUSH_TYPES[0].value,
+    brushType: 'circle', // Default to circle brush
     isEraser: false,
   });
 
@@ -109,6 +108,19 @@ const TeacherWhiteboard: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // Initialize custom canvas for specialized brushes
+  useEffect(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvasSize.width;
+    canvas.height = canvasSize.height;
+
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      customCanvasRef.current = canvas;
+      customCtxRef.current = ctx;
+    }
+  }, [canvasSize]);
+
   const handleStroke = useCallback(async () => {
     if (isLive && canvasRef.current && socket) {
       try {
@@ -131,6 +143,30 @@ const TeacherWhiteboard: React.FC = () => {
       }
     }
   }, [isLive]);
+
+  // Apply the appropriate brush based on the type
+  const applyBrush = useCallback((point: StrokePoint) => {
+    if (!customCtxRef.current) return;
+
+    const options: BrushOptions = {
+      color: drawingState.isEraser ? '#FFFFFF' : drawingState.color,
+      size: drawingState.strokeWidth,
+      opacity: drawingState.opacity
+    };
+
+    switch (drawingState.brushType) {
+      case 'square':
+        drawSquareBrush(customCtxRef.current, point, options);
+        break;
+      case 'triangle':
+        drawTriangleBrush(customCtxRef.current, point, options);
+        break;
+      case 'circle':
+      default:
+        drawCircleBrush(customCtxRef.current, point, options);
+        break;
+    }
+  }, [drawingState]);
 
   useEffect(() => {
     const socket = initializeSocket();
@@ -288,34 +324,11 @@ const TeacherWhiteboard: React.FC = () => {
 
   // Handle brush type change
   const handleBrushTypeChange = (type: string) => {
-    // Handle special brush types that require adjusting multiple properties
-    const newState = { ...drawingState, brushType: type };
-
-    switch (type) {
-      case 'round-thin':
-        newState.strokeWidth = 2; // Very thin
-        newState.brushType = 'round';
-        break;
-      case 'round-medium':
-        newState.strokeWidth = 6; // Medium width
-        newState.brushType = 'round';
-        break;
-      case 'round-bold':
-        newState.strokeWidth = 12; // Bold width
-        newState.brushType = 'round';
-        break;
-      case 'round-marker':
-        newState.strokeWidth = 16; // Large width
-        newState.opacity = 0.7; // Partially transparent
-        newState.brushType = 'round';
-        break;
-      default:
-        // For standard brush types (round, square, butt)
-        newState.brushType = type;
-        break;
-    }
-
-    setDrawingState(newState);
+    setDrawingState(prev => ({
+      ...prev,
+      brushType: type,
+      isEraser: false
+    }));
     setOpenDropdown(null);
   };
 
@@ -555,7 +568,7 @@ const TeacherWhiteboard: React.FC = () => {
               )}
             </div>
 
-            {/* Brush Type Selector */}
+            {/* Brush Type Selector - Simplified to just 3 options */}
             <div className="relative" onClick={(e) => e.stopPropagation()}>
               <button
                 onClick={() => toggleDropdown('brush')}
@@ -569,23 +582,24 @@ const TeacherWhiteboard: React.FC = () => {
               {openDropdown === 'brush' && (
                 <div className="absolute z-10 top-full left-0 mt-1 p-2 bg-white rounded-lg shadow-lg border border-gray-200">
                   <div className="flex flex-col gap-2 w-48">
-                    {BRUSH_TYPES.map((brush) => (
-                      <button
-                        key={brush.value}
-                        onClick={() => handleBrushTypeChange(brush.value)}
-                        className={`flex items-center justify-between px-3 py-2 rounded hover:bg-gray-100 ${
-                          (drawingState.brushType === brush.value ||
-                           (brush.value.startsWith('round-') && drawingState.brushType === 'round'))
-                            ? 'bg-gray-100' : ''
-                        }`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <Paintbrush size={16} />
-                          <span>{brush.name}</span>
-                        </div>
-                        <span className="text-xs text-gray-500">{(brush as any).description}</span>
-                      </button>
-                    ))}
+                    {BRUSH_TYPES.map((brush) => {
+                      const IconComponent = brush.icon;
+                      return (
+                        <button
+                          key={brush.value}
+                          onClick={() => handleBrushTypeChange(brush.value)}
+                          className={`flex items-center justify-between px-3 py-2 rounded hover:bg-gray-100 ${
+                            drawingState.brushType === brush.value ? 'bg-gray-100' : ''
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <IconComponent size={16} />
+                            <span>{brush.name}</span>
+                          </div>
+                          <span className="text-xs text-gray-500">{brush.description}</span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -604,7 +618,7 @@ const TeacherWhiteboard: React.FC = () => {
             exportWithBackgroundImage={false}
             withTimestamp={false}
             allowOnlyPointerType="all"
-            lineCap={drawingState.brushType as "round" | "butt" | "square"}
+            lineCap={drawingState.brushType === 'square' ? 'square' : 'round'}
             style={{
               opacity: drawingState.opacity,
             }}
