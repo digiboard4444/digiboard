@@ -3,18 +3,7 @@ import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
 import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown } from 'lucide-react';
 import { io } from 'socket.io-client';
 import type { TypedSocket } from '../../types/socket';
-import {
-  StrokePoint,
-  BrushOptions,
-  drawDashedLine,
-  drawDottedLine,
-  drawCalligraphyStroke,
-  drawMarkerStroke,
-  drawPencilStroke,
-  drawSprayStroke,
-  drawWatercolorStroke,
-  drawHighlighterStroke
-} from '../../lib/brushUtils';  // Adjust the path as needed
+import { StrokePoint, BrushOptions, drawDashedLine, drawCalligraphyStroke } from './brushUtils';
 
 let socket: TypedSocket | null = null;
 
@@ -61,7 +50,7 @@ const OPACITY_OPTIONS = [
   { name: '100%', value: 1.0 },
 ];
 
-// Define brush types
+// Define just 3 brush types as requested
 const BRUSH_TYPES = [
   {
     id: 'normal',
@@ -71,39 +60,11 @@ const BRUSH_TYPES = [
     lineDash: []
   },
   {
-    id: 'square',
-    name: 'Square',
-    description: 'Square-tipped brush',
-    lineCap: 'square',
-    lineDash: []
-  },
-  {
-    id: 'flat',
-    name: 'Flat',
-    description: 'Flat-tipped brush',
-    lineCap: 'butt',
-    lineDash: []
-  },
-  {
     id: 'dash',
     name: 'Dashed',
     description: 'Dashed line pattern',
     lineCap: 'butt',
     lineDash: [12, 6]
-  },
-  {
-    id: 'dots',
-    name: 'Dotted',
-    description: 'Dotted line pattern',
-    lineCap: 'round',
-    lineDash: [2, 8]
-  },
-  {
-    id: 'marker',
-    name: 'Marker',
-    description: 'Broad marker stroke',
-    lineCap: 'square',
-    lineDash: []
   },
   {
     id: 'calligraphy',
@@ -261,7 +222,7 @@ const TeacherWhiteboard: React.FC = () => {
     }
   }, [isLive]);
 
-  // Handle custom brush drawing
+  // Apply brush style based on the selected brush type
   const applyBrushStyle = useCallback((ctx: CanvasRenderingContext2D) => {
     if (!ctx) return;
 
@@ -273,12 +234,6 @@ const TeacherWhiteboard: React.FC = () => {
     ctx.lineCap = brush.lineCap as CanvasLineCap;
     ctx.lineJoin = 'round';
     ctx.setLineDash(brush.lineDash);
-
-    // Special brush adjustments
-    if (drawingState.brushType === 'marker') {
-      ctx.lineWidth = drawingState.strokeWidth * 1.5;
-      ctx.globalAlpha = Math.min(0.7, drawingState.opacity);
-    }
   }, [drawingState]);
 
   // Custom drawing event handlers
@@ -312,52 +267,39 @@ const TeacherWhiteboard: React.FC = () => {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
+    // Create points and options for brush utilities
+    const fromPoint: StrokePoint = { x: lastPointRef.current.x, y: lastPointRef.current.y };
+    const toPoint: StrokePoint = { x, y };
+    const options: BrushOptions = {
+      color: drawingState.isEraser ? '#FFFFFF' : drawingState.color,
+      size: drawingState.strokeWidth,
+      opacity: drawingState.opacity
+    };
+
+    // Use brush utilities based on brush type
     const ctx = ctxRef.current;
-    applyBrushStyle(ctx);
 
-    // Special brush types
-    if (drawingState.brushType === 'dash' || drawingState.brushType === 'dots') {
-      // Use line dash patterns set in applyBrushStyle
-      ctx.beginPath();
-      ctx.moveTo(lastPointRef.current.x, lastPointRef.current.y);
-      ctx.lineTo(x, y);
-      ctx.stroke();
-    }
-    else if (drawingState.brushType === 'calligraphy') {
-      // Calligraphy effect
-      const angle = Math.PI / 4; // 45 degrees
-      const width = drawingState.strokeWidth;
+      // Use brush utilities based on brush type
+      switch (drawingState.brushType) {
+        case 'dash':
+          drawDashedLine(ctx, fromPoint, toPoint, options);
+          break;
 
-      ctx.beginPath();
-      ctx.moveTo(
-        lastPointRef.current.x + Math.cos(angle) * width/2,
-        lastPointRef.current.y + Math.sin(angle) * width/2
-      );
-      ctx.lineTo(
-        lastPointRef.current.x - Math.cos(angle) * width/2,
-        lastPointRef.current.y - Math.sin(angle) * width/2
-      );
-      ctx.lineTo(
-        x - Math.cos(angle) * width/2,
-        y - Math.sin(angle) * width/2
-      );
-      ctx.lineTo(
-        x + Math.cos(angle) * width/2,
-        y + Math.sin(angle) * width/2
-      );
-      ctx.closePath();
-      ctx.fill();
-    }
-    else {
-      // Standard brush
-      ctx.beginPath();
-      ctx.moveTo(lastPointRef.current.x, lastPointRef.current.y);
-      ctx.lineTo(x, y);
-      ctx.stroke();
-    }
+        case 'calligraphy':
+          drawCalligraphyStroke(ctx, fromPoint, toPoint, options);
+          break;
+
+        default:
+          // Standard brush
+          applyBrushStyle(ctx);
+          ctx.beginPath();
+          ctx.moveTo(lastPointRef.current.x, lastPointRef.current.y);
+          ctx.lineTo(x, y);
+          ctx.stroke();
+      }
 
     lastPointRef.current = { x, y };
-  }, [isLive, isDrawing, drawingState.brushType, drawingState.strokeWidth, applyBrushStyle]);
+  }, [isLive, isDrawing, drawingState, applyBrushStyle]);
 
   const handleMouseUp = useCallback(() => {
     if (!isLive || !isDrawing) return;
@@ -367,8 +309,8 @@ const TeacherWhiteboard: React.FC = () => {
 
     // Synchronize with main canvas
     if (canvasRef.current && customCanvasRef.current) {
-      // In a full implementation, we would need to merge the two canvases
-      // For this demo, we'll just trigger synchronization
+      // For a full implementation, we would need to merge the canvas contents
+      // For this demo, we'll just sync the standard canvas
       syncCanvasState();
     }
   }, [isLive, isDrawing, syncCanvasState]);
@@ -755,7 +697,7 @@ const TeacherWhiteboard: React.FC = () => {
               )}
             </div>
 
-            {/* Brush Type Selector */}
+            {/* Brush Type Selector - Simplified to just 3 types */}
             <div className="relative" onClick={(e) => e.stopPropagation()}>
               <button
                 onClick={(e) => toggleDropdown('brush', e)}
@@ -769,7 +711,7 @@ const TeacherWhiteboard: React.FC = () => {
               {openDropdown === 'brush' && (
                 <div className="absolute z-10 top-full left-0 mt-1 p-2 bg-white rounded-lg shadow-lg border border-gray-200">
                   <div className="flex flex-col gap-2 w-60">
-                    {BRUSH_TYPES.map((brush) => (
+                  {BRUSH_TYPES.map((brush) => (
                       <button
                         key={brush.id}
                         onClick={() => handleBrushTypeChange(brush.id)}
@@ -804,96 +746,97 @@ const TeacherWhiteboard: React.FC = () => {
               exportWithBackgroundImage={false}
               withTimestamp={false}
               allowOnlyPointerType="all"
-              lineCap={drawingState.brushType === 'square' || drawingState.brushType === 'marker'
-                ? 'square'
-                : drawingState.brushType === 'flat' || drawingState.brushType === 'dash' || drawingState.brushType === 'calligraphy'
-                  ? 'butt'
-                  : 'round'
-            }
-            style={{
-              opacity: drawingState.opacity,
-            }}
-            className="touch-none"
-            onStroke={syncCanvasState}
-          />
+              lineCap={
+                drawingState.brushType === 'normal'
+                  ? 'round'
+                  : drawingState.brushType === 'dash' || drawingState.brushType === 'calligraphy'
+                    ? 'butt'
+                    : 'round'
+              }
+              style={{
+                opacity: drawingState.opacity,
+              }}
+              className="touch-none"
+              onStroke={syncCanvasState}
+            />
 
-          {/* Custom canvas overlay for special brush types */}
-          <canvas
-            ref={customCanvasRef}
-            width={canvasSize.width}
-            height={canvasSize.height}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-            style={{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              width: `${canvasSize.width}px`,
-              height: `${canvasSize.height}px`,
-              pointerEvents: isLive ? 'auto' : 'none',
-              opacity: (drawingState.brushType === 'calligraphy' || drawingState.brushType === 'dash' || drawingState.brushType === 'dots') ? 1 : 0,
-            }}
-            className="touch-none"
-          />
-        </div>
-      </div>
-    </div>
-
-    {/* Start Session Modal */}
-    {showStartModal && (
-      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-        <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
-          <h3 className="text-xl font-bold mb-4">Start Live Session</h3>
-          <p className="text-gray-600 mb-6">
-            Are you sure you want to start a live whiteboard session? Students will be able to join and view your whiteboard.
-          </p>
-          <div className="flex flex-col sm:flex-row justify-end gap-3">
-            <button
-              onClick={() => setShowStartModal(false)}
-              className="px-4 py-2 rounded-md bg-gray-200 hover:bg-gray-300 text-gray-800"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={confirmStartLive}
-              className="px-4 py-2 rounded-md bg-green-500 hover:bg-green-600 text-white"
-            >
-              Start Session
-            </button>
+            {/* Custom canvas overlay for special brush types */}
+            <canvas
+              ref={customCanvasRef}
+              width={canvasSize.width}
+              height={canvasSize.height}
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={handleMouseUp}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: `${canvasSize.width}px`,
+                height: `${canvasSize.height}px`,
+                pointerEvents: isLive ? 'auto' : 'none',
+                opacity: (drawingState.brushType === 'calligraphy' || drawingState.brushType === 'dash') ? 1 : 0,
+              }}
+              className="touch-none"
+            />
           </div>
         </div>
       </div>
-    )}
 
-    {/* Stop Session Modal */}
-    {showStopModal && (
-      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-        <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
-          <h3 className="text-xl font-bold mb-4">Stop Live Session</h3>
-          <p className="text-gray-600 mb-6">
-            Are you sure you want to end the live session? All connected students will be disconnected and their sessions will be saved.
-          </p>
-          <div className="flex flex-col sm:flex-row justify-end gap-3">
-            <button
-              onClick={() => setShowStopModal(false)}
-              className="px-4 py-2 rounded-md bg-gray-200 hover:bg-gray-300 text-gray-800"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={confirmStopLive}
-              className="px-4 py-2 rounded-md bg-red-500 hover:bg-red-600 text-white"
-            >
-              End Session
-            </button>
+      {/* Start Session Modal */}
+      {showStartModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <h3 className="text-xl font-bold mb-4">Start Live Session</h3>
+            <p className="text-gray-600 mb-6">
+              Are you sure you want to start a live whiteboard session? Students will be able to join and view your whiteboard.
+            </p>
+            <div className="flex flex-col sm:flex-row justify-end gap-3">
+              <button
+                onClick={() => setShowStartModal(false)}
+                className="px-4 py-2 rounded-md bg-gray-200 hover:bg-gray-300 text-gray-800"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmStartLive}
+                className="px-4 py-2 rounded-md bg-green-500 hover:bg-green-600 text-white"
+              >
+                Start Session
+              </button>
+            </div>
           </div>
         </div>
-      </div>
-    )}
-  </>
-);
+      )}
+
+      {/* Stop Session Modal */}
+      {showStopModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <h3 className="text-xl font-bold mb-4">Stop Live Session</h3>
+            <p className="text-gray-600 mb-6">
+              Are you sure you want to end the live session? All connected students will be disconnected and their sessions will be saved.
+            </p>
+            <div className="flex flex-col sm:flex-row justify-end gap-3">
+              <button
+                onClick={() => setShowStopModal(false)}
+                className="px-4 py-2 rounded-md bg-gray-200 hover:bg-gray-300 text-gray-800"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmStopLive}
+                className="px-4 py-2 rounded-md bg-red-500 hover:bg-red-600 text-white"
+              >
+                End Session
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
 };
 
 export default TeacherWhiteboard;
