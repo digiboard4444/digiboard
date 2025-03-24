@@ -3,7 +3,6 @@ import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
 import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown } from 'lucide-react';
 import { io } from 'socket.io-client';
 import type { TypedSocket } from '../../types/socket';
-import { StrokePoint, BrushOptions, drawDashedLine, drawCalligraphyStroke } from './brushUtils';
 
 let socket: TypedSocket | null = null;
 
@@ -50,30 +49,20 @@ const OPACITY_OPTIONS = [
   { name: '100%', value: 1.0 },
 ];
 
-// Define just 3 brush types as requested
+// ReactSketchCanvas only supports 'round', 'butt', and 'square' line caps
+// For other effects, we'll need a custom solution later
 const BRUSH_TYPES = [
-  {
-    id: 'normal',
-    name: 'Normal',
-    description: 'Standard solid brush',
-    lineCap: 'round',
-    lineDash: []
-  },
-  {
-    id: 'dash',
-    name: 'Dashed',
-    description: 'Dashed line pattern',
-    lineCap: 'butt',
-    lineDash: [12, 6]
-  },
-  {
-    id: 'calligraphy',
-    name: 'Calligraphy',
-    description: 'Angled calligraphy pen',
-    lineCap: 'butt',
-    lineDash: []
-  }
+  { name: 'Round', value: 'round', description: 'Round brush tip' },
+  { name: 'Square', value: 'square', description: 'Square brush tip' },
+  { name: 'Butt', value: 'butt', description: 'Flat brush tip' },
+  { name: 'Thin', value: 'round-thin', description: 'Thin line (round)' },
+  { name: 'Medium', value: 'round-medium', description: 'Medium line (round)' },
+  { name: 'Bold', value: 'round-bold', description: 'Bold line (round)' },
+  { name: 'Marker', value: 'round-marker', description: 'Marker style (large, partially transparent)' },
 ];
+
+// ReactSketchCanvas only supports basic line styles
+// More advanced brush styles would require custom canvas implementations
 
 interface DrawingState {
   color: string;
@@ -84,13 +73,8 @@ interface DrawingState {
 }
 
 const TeacherWhiteboard: React.FC = () => {
-  // Main canvas ref
   const canvasRef = useRef<ReactSketchCanvasRef | null>(null);
-  // Custom canvas for special brush types
-  const customCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
 
-  // State
   const [isLive, setIsLive] = useState(false);
   const [showStartModal, setShowStartModal] = useState(false);
   const [showStopModal, setShowStopModal] = useState(false);
@@ -103,7 +87,7 @@ const TeacherWhiteboard: React.FC = () => {
     color: COLORS[0].value,
     strokeWidth: STROKE_SIZES[2].value,
     opacity: OPACITY_OPTIONS[4].value,
-    brushType: BRUSH_TYPES[0].id,
+    brushType: BRUSH_TYPES[0].value,
     isEraser: false,
   });
 
@@ -114,11 +98,6 @@ const TeacherWhiteboard: React.FC = () => {
   const [strokeHistory, setStrokeHistory] = useState<any[]>([]);
   const [redoStack, setRedoStack] = useState<any[]>([]);
 
-  // Drawing state
-  const [isDrawing, setIsDrawing] = useState(false);
-  const lastPointRef = useRef<{x: number, y: number} | null>(null);
-
-  // Initialize and resize the canvas
   useEffect(() => {
     const handleResize = () => {
       const container = document.getElementById('whiteboard-container');
@@ -134,28 +113,29 @@ const TeacherWhiteboard: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Setup custom canvas context
-  useEffect(() => {
-    if (customCanvasRef.current) {
-      const canvas = customCanvasRef.current;
-      canvas.width = canvasSize.width;
-      canvas.height = canvasSize.height;
+  const handleStroke = useCallback(async () => {
+    if (isLive && canvasRef.current && socket) {
+      try {
+        const paths = await canvasRef.current.exportPaths();
+        const userId = localStorage.getItem('userId');
 
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        // Set initial styles
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.globalAlpha = drawingState.opacity;
-        ctx.lineWidth = drawingState.strokeWidth;
-        ctx.strokeStyle = drawingState.color;
+        // Update stroke history for undo/redo
+        setStrokeHistory(prevHistory => [...prevHistory, paths]);
+        setRedoStack([]);
 
-        ctxRef.current = ctx;
+        if (userId) {
+          console.log('Sending whiteboard update');
+          socket.emit('whiteboardUpdate', {
+            teacherId: userId,
+            whiteboardData: JSON.stringify(paths)
+          });
+        }
+      } catch (error) {
+        console.error('Error handling stroke:', error);
       }
     }
-  }, [canvasSize.width, canvasSize.height, drawingState, customCanvasRef]);
+  }, [isLive]);
 
-  // Handle socket connection and events
   useEffect(() => {
     const socket = initializeSocket();
     const userId = localStorage.getItem('userId');
@@ -165,7 +145,7 @@ const TeacherWhiteboard: React.FC = () => {
       setIsConnecting(false);
       if (isLive && userId) {
         socket.emit('startLive', userId);
-        syncCanvasState(); // Send current canvas state
+        handleStroke(); // Send current canvas state
       }
     };
 
@@ -196,126 +176,8 @@ const TeacherWhiteboard: React.FC = () => {
         socket.emit('stopLive', userId);
       }
     };
-  }, [isLive]);
+  }, [isLive, handleStroke]);
 
-  // Sync canvas state with server
-  const syncCanvasState = useCallback(async () => {
-    if (isLive && canvasRef.current && socket) {
-      try {
-        const paths = await canvasRef.current.exportPaths();
-        const userId = localStorage.getItem('userId');
-
-        // Update stroke history for undo/redo
-        setStrokeHistory(prevHistory => [...prevHistory, paths]);
-        setRedoStack([]);
-
-        if (userId) {
-          console.log('Sending whiteboard update');
-          socket.emit('whiteboardUpdate', {
-            teacherId: userId,
-            whiteboardData: JSON.stringify(paths)
-          });
-        }
-      } catch (error) {
-        console.error('Error syncing canvas state:', error);
-      }
-    }
-  }, [isLive]);
-
-  // Apply brush style based on the selected brush type
-  const applyBrushStyle = useCallback((ctx: CanvasRenderingContext2D) => {
-    if (!ctx) return;
-
-    const brush = BRUSH_TYPES.find(b => b.id === drawingState.brushType) || BRUSH_TYPES[0];
-
-    ctx.globalAlpha = drawingState.opacity;
-    ctx.strokeStyle = drawingState.isEraser ? '#FFFFFF' : drawingState.color;
-    ctx.lineWidth = drawingState.strokeWidth;
-    ctx.lineCap = brush.lineCap as CanvasLineCap;
-    ctx.lineJoin = 'round';
-    ctx.setLineDash(brush.lineDash);
-  }, [drawingState]);
-
-  // Custom drawing event handlers
-  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isLive || !ctxRef.current) return;
-
-    setIsDrawing(true);
-
-    const rect = customCanvasRef.current?.getBoundingClientRect();
-    if (!rect) return;
-
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    // Start new path
-    const ctx = ctxRef.current;
-    applyBrushStyle(ctx);
-
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-
-    lastPointRef.current = { x, y };
-  }, [isLive, applyBrushStyle]);
-
-  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isLive || !isDrawing || !ctxRef.current || !lastPointRef.current) return;
-
-    const rect = customCanvasRef.current?.getBoundingClientRect();
-    if (!rect) return;
-
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    // Create points and options for brush utilities
-    const fromPoint: StrokePoint = { x: lastPointRef.current.x, y: lastPointRef.current.y };
-    const toPoint: StrokePoint = { x, y };
-    const options: BrushOptions = {
-      color: drawingState.isEraser ? '#FFFFFF' : drawingState.color,
-      size: drawingState.strokeWidth,
-      opacity: drawingState.opacity
-    };
-
-    // Use brush utilities based on brush type
-    const ctx = ctxRef.current;
-
-      // Use brush utilities based on brush type
-      switch (drawingState.brushType) {
-        case 'dash':
-          drawDashedLine(ctx, fromPoint, toPoint, options);
-          break;
-
-        case 'calligraphy':
-          drawCalligraphyStroke(ctx, fromPoint, toPoint, options);
-          break;
-
-        default:
-          // Standard brush
-          applyBrushStyle(ctx);
-          ctx.beginPath();
-          ctx.moveTo(lastPointRef.current.x, lastPointRef.current.y);
-          ctx.lineTo(x, y);
-          ctx.stroke();
-      }
-
-    lastPointRef.current = { x, y };
-  }, [isLive, isDrawing, drawingState, applyBrushStyle]);
-
-  const handleMouseUp = useCallback(() => {
-    if (!isLive || !isDrawing) return;
-
-    setIsDrawing(false);
-    lastPointRef.current = null;
-
-    // Synchronize with main canvas
-    if (canvasRef.current && customCanvasRef.current) {
-      // For a full implementation, we would need to merge the canvas contents
-      // For this demo, we'll just sync the standard canvas
-      syncCanvasState();
-    }
-  }, [isLive, isDrawing, syncCanvasState]);
-
-  // Handle session start/stop
   const handleStartLive = () => {
     setError(null);
     setShowStartModal(true);
@@ -351,14 +213,26 @@ const TeacherWhiteboard: React.FC = () => {
       setIsLive(false);
       setShowStopModal(false);
       socket.emit('stopLive', userId);
-
-      // Clear canvases
       if (canvasRef.current) {
         canvasRef.current.clearCanvas();
       }
+      // Reset history
+      setStrokeHistory([]);
+      setRedoStack([]);
+    }
+  };
 
-      if (ctxRef.current && customCanvasRef.current) {
-        ctxRef.current.clearRect(0, 0, customCanvasRef.current.width, customCanvasRef.current.height);
+  const handleClearCanvas = async () => {
+    if (canvasRef.current && isLive) {
+      await canvasRef.current.clearCanvas();
+      const userId = localStorage.getItem('userId');
+      const socket = initializeSocket();
+
+      if (userId) {
+        socket.emit('whiteboardUpdate', {
+          teacherId: userId,
+          whiteboardData: JSON.stringify([])
+        });
       }
 
       // Reset history
@@ -367,34 +241,26 @@ const TeacherWhiteboard: React.FC = () => {
     }
   };
 
-  const handleClearCanvas = async () => {
-    if (!isLive) return;
-
-    // Clear main canvas
-    if (canvasRef.current) {
-      await canvasRef.current.clearCanvas();
+  // Toggle dropdown menus
+  const toggleDropdown = (menu: string) => {
+    if (openDropdown === menu) {
+      setOpenDropdown(null);
+    } else {
+      setOpenDropdown(menu);
     }
-
-    // Clear custom canvas
-    if (ctxRef.current && customCanvasRef.current) {
-      ctxRef.current.clearRect(0, 0, customCanvasRef.current.width, customCanvasRef.current.height);
-    }
-
-    // Send clear event to students
-    const userId = localStorage.getItem('userId');
-    const socket = initializeSocket();
-
-    if (userId) {
-      socket.emit('whiteboardUpdate', {
-        teacherId: userId,
-        whiteboardData: JSON.stringify([])
-      });
-    }
-
-    // Reset history
-    setStrokeHistory([]);
-    setRedoStack([]);
   };
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = () => {
+      setOpenDropdown(null);
+    };
+
+    document.addEventListener('click', handleClickOutside);
+    return () => {
+      document.removeEventListener('click', handleClickOutside);
+    };
+  }, []);
 
   // Handle color change
   const handleColorChange = (color: string) => {
@@ -426,11 +292,34 @@ const TeacherWhiteboard: React.FC = () => {
 
   // Handle brush type change
   const handleBrushTypeChange = (type: string) => {
-    setDrawingState(prev => ({
-      ...prev,
-      brushType: type,
-      isEraser: false
-    }));
+    // Handle special brush types that require adjusting multiple properties
+    const newState = { ...drawingState, brushType: type };
+
+    switch (type) {
+      case 'round-thin':
+        newState.strokeWidth = 2; // Very thin
+        newState.brushType = 'round';
+        break;
+      case 'round-medium':
+        newState.strokeWidth = 6; // Medium width
+        newState.brushType = 'round';
+        break;
+      case 'round-bold':
+        newState.strokeWidth = 12; // Bold width
+        newState.brushType = 'round';
+        break;
+      case 'round-marker':
+        newState.strokeWidth = 16; // Large width
+        newState.opacity = 0.7; // Partially transparent
+        newState.brushType = 'round';
+        break;
+      default:
+        // For standard brush types (round, square, butt)
+        newState.brushType = type;
+        break;
+    }
+
+    setDrawingState(newState);
     setOpenDropdown(null);
   };
 
@@ -452,11 +341,6 @@ const TeacherWhiteboard: React.FC = () => {
       const lastPath = newHistory.pop();
       setStrokeHistory(newHistory);
       setRedoStack(prev => [...prev, lastPath]);
-
-      // Clear custom canvas and redraw from main canvas
-      if (ctxRef.current && customCanvasRef.current) {
-        ctxRef.current.clearRect(0, 0, customCanvasRef.current.width, customCanvasRef.current.height);
-      }
 
       // Send updated canvas state
       const paths = await canvasRef.current.exportPaths();
@@ -492,28 +376,6 @@ const TeacherWhiteboard: React.FC = () => {
       }
     }
   };
-
-  // Toggle dropdown menus
-  const toggleDropdown = (menu: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (openDropdown === menu) {
-      setOpenDropdown(null);
-    } else {
-      setOpenDropdown(menu);
-    }
-  };
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = () => {
-      setOpenDropdown(null);
-    };
-
-    document.addEventListener('click', handleClickOutside);
-    return () => {
-      document.removeEventListener('click', handleClickOutside);
-    };
-  }, []);
 
   return (
     <>
@@ -601,7 +463,7 @@ const TeacherWhiteboard: React.FC = () => {
             {/* Color Selector */}
             <div className="relative" onClick={(e) => e.stopPropagation()}>
               <button
-                onClick={(e) => toggleDropdown('color', e)}
+                onClick={() => toggleDropdown('color')}
                 className="flex items-center gap-2 px-3 py-2 rounded hover:bg-gray-100"
                 style={{ backgroundColor: drawingState.isEraser ? 'white' : drawingState.color,
                          color: drawingState.isEraser || drawingState.color === '#FFFFFF' || drawingState.color === '#FFFF00' ? 'black' : 'white' }}
@@ -638,10 +500,10 @@ const TeacherWhiteboard: React.FC = () => {
             {/* Size Selector */}
             <div className="relative" onClick={(e) => e.stopPropagation()}>
               <button
-                onClick={(e) => toggleDropdown('size', e)}
+                onClick={() => toggleDropdown('size')}
                 className="flex items-center gap-2 px-3 py-2 rounded hover:bg-gray-100"
               >
-                <Circle size={Math.min(20, drawingState.strokeWidth)} />
+                <Circle size={drawingState.strokeWidth} />
                 <span>Size</span>
                 <ChevronDown size={16} />
               </button>
@@ -657,7 +519,7 @@ const TeacherWhiteboard: React.FC = () => {
                           drawingState.strokeWidth === size.value ? 'bg-gray-100' : ''
                         }`}
                       >
-                        <Circle size={Math.min(20, size.value)} />
+                        <Circle size={size.value} />
                         <span>{size.name}</span>
                       </button>
                     ))}
@@ -669,7 +531,7 @@ const TeacherWhiteboard: React.FC = () => {
             {/* Opacity Selector */}
             <div className="relative" onClick={(e) => e.stopPropagation()}>
               <button
-                onClick={(e) => toggleDropdown('opacity', e)}
+                onClick={() => toggleDropdown('opacity')}
                 className="flex items-center gap-2 px-3 py-2 rounded hover:bg-gray-100"
               >
                 <div className="w-4 h-4 bg-gray-400 rounded-full opacity-75"></div>
@@ -697,33 +559,35 @@ const TeacherWhiteboard: React.FC = () => {
               )}
             </div>
 
-            {/* Brush Type Selector - Simplified to just 3 types */}
+            {/* Brush Type Selector */}
             <div className="relative" onClick={(e) => e.stopPropagation()}>
               <button
-                onClick={(e) => toggleDropdown('brush', e)}
+                onClick={() => toggleDropdown('brush')}
                 className="flex items-center gap-2 px-3 py-2 rounded hover:bg-gray-100"
               >
                 <Paintbrush size={16} />
-                <span>Brush Type</span>
+                <span>Brush</span>
                 <ChevronDown size={16} />
               </button>
 
               {openDropdown === 'brush' && (
                 <div className="absolute z-10 top-full left-0 mt-1 p-2 bg-white rounded-lg shadow-lg border border-gray-200">
-                  <div className="flex flex-col gap-2 w-60">
-                  {BRUSH_TYPES.map((brush) => (
+                  <div className="flex flex-col gap-2 w-48">
+                    {BRUSH_TYPES.map((brush) => (
                       <button
-                        key={brush.id}
-                        onClick={() => handleBrushTypeChange(brush.id)}
+                        key={brush.value}
+                        onClick={() => handleBrushTypeChange(brush.value)}
                         className={`flex items-center justify-between px-3 py-2 rounded hover:bg-gray-100 ${
-                          drawingState.brushType === brush.id ? 'bg-gray-100' : ''
+                          (drawingState.brushType === brush.value ||
+                           (brush.value.startsWith('round-') && drawingState.brushType === 'round'))
+                            ? 'bg-gray-100' : ''
                         }`}
                       >
                         <div className="flex items-center gap-2">
                           <Paintbrush size={16} />
                           <span>{brush.name}</span>
                         </div>
-                        <span className="text-xs text-gray-500">{brush.description}</span>
+                        <span className="text-xs text-gray-500">{(brush as any).description}</span>
                       </button>
                     ))}
                   </div>
@@ -734,53 +598,24 @@ const TeacherWhiteboard: React.FC = () => {
         )}
 
         <div id="whiteboard-container" className="border rounded-lg overflow-hidden bg-white">
-          <div className="relative">
-            {/* Main ReactSketchCanvas for basic drawing */}
-            <ReactSketchCanvas
-              ref={canvasRef}
-              strokeWidth={drawingState.strokeWidth}
-              strokeColor={drawingState.isEraser ? "#FFFFFF" : drawingState.color}
-              canvasColor="white"
-              width={`${canvasSize.width}px`}
-              height={`${canvasSize.height}px`}
-              exportWithBackgroundImage={false}
-              withTimestamp={false}
-              allowOnlyPointerType="all"
-              lineCap={
-                drawingState.brushType === 'normal'
-                  ? 'round'
-                  : drawingState.brushType === 'dash' || drawingState.brushType === 'calligraphy'
-                    ? 'butt'
-                    : 'round'
-              }
-              style={{
-                opacity: drawingState.opacity,
-              }}
-              className="touch-none"
-              onStroke={syncCanvasState}
-            />
-
-            {/* Custom canvas overlay for special brush types */}
-            <canvas
-              ref={customCanvasRef}
-              width={canvasSize.width}
-              height={canvasSize.height}
-              onMouseDown={handleMouseDown}
-              onMouseMove={handleMouseMove}
-              onMouseUp={handleMouseUp}
-              onMouseLeave={handleMouseUp}
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                width: `${canvasSize.width}px`,
-                height: `${canvasSize.height}px`,
-                pointerEvents: isLive ? 'auto' : 'none',
-                opacity: (drawingState.brushType === 'calligraphy' || drawingState.brushType === 'dash') ? 1 : 0,
-              }}
-              className="touch-none"
-            />
-          </div>
+          <ReactSketchCanvas
+            ref={canvasRef}
+            strokeWidth={drawingState.strokeWidth}
+            strokeColor={drawingState.isEraser ? "#FFFFFF" : drawingState.color}
+            canvasColor="white"
+            width={`${canvasSize.width}px`}
+            height={`${canvasSize.height}px`}
+            exportWithBackgroundImage={false}
+            withTimestamp={false}
+            allowOnlyPointerType="all"
+            lineCap={drawingState.brushType as "round" | "butt" | "square"}
+            style={{
+              opacity: drawingState.opacity,
+            }}
+            className="touch-none"
+            onStroke={handleStroke}
+            onChange={handleStroke}
+          />
         </div>
       </div>
 
