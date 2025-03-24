@@ -3,7 +3,66 @@ import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
 import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown, Square, Triangle } from 'lucide-react';
 import { io } from 'socket.io-client';
 import type { TypedSocket } from '../../types/socket';
-import { drawCircleBrush, drawSquareBrush, drawTriangleBrush, StrokePoint, BrushOptions } from '../../lib/brushUtils';
+
+// Define brush utility interfaces and functions inline
+interface StrokePoint {
+  x: number;
+  y: number;
+}
+
+interface BrushOptions {
+  color: string;
+  size: number;
+  opacity: number;
+}
+
+// Draw a circular brush stroke
+const drawCircleBrush = (
+  ctx: CanvasRenderingContext2D,
+  point: StrokePoint,
+  options: BrushOptions
+) => {
+  ctx.save();
+  ctx.fillStyle = options.color;
+  ctx.globalAlpha = options.opacity;
+  ctx.beginPath();
+  ctx.arc(point.x, point.y, options.size / 2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+};
+
+// Draw a square brush stroke
+const drawSquareBrush = (
+  ctx: CanvasRenderingContext2D,
+  point: StrokePoint,
+  options: BrushOptions
+) => {
+  ctx.save();
+  ctx.fillStyle = options.color;
+  ctx.globalAlpha = options.opacity;
+  const halfSize = options.size / 2;
+  ctx.fillRect(point.x - halfSize, point.y - halfSize, options.size, options.size);
+  ctx.restore();
+};
+
+// Draw a triangle brush stroke
+const drawTriangleBrush = (
+  ctx: CanvasRenderingContext2D,
+  point: StrokePoint,
+  options: BrushOptions
+) => {
+  ctx.save();
+  ctx.fillStyle = options.color;
+  ctx.globalAlpha = options.opacity;
+  const size = options.size;
+  ctx.beginPath();
+  ctx.moveTo(point.x, point.y - size / 2); // Top point
+  ctx.lineTo(point.x - size / 2, point.y + size / 2); // Bottom left
+  ctx.lineTo(point.x + size / 2, point.y + size / 2); // Bottom right
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+};
 
 let socket: TypedSocket | null = null;
 
