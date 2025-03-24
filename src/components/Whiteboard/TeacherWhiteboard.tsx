@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
-import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, Square, ChevronDown } from 'lucide-react';
+import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown } from 'lucide-react';
 import { io } from 'socket.io-client';
 import type { TypedSocket } from '../../types/socket';
 
@@ -49,41 +49,20 @@ const OPACITY_OPTIONS = [
   { name: '100%', value: 1.0 },
 ];
 
+// ReactSketchCanvas only supports 'round', 'butt', and 'square' line caps
+// For other effects, we'll need a custom solution later
 const BRUSH_TYPES = [
-  { name: 'Round', value: 'round' },
-  { name: 'Square', value: 'square' },
-  { name: 'Butt', value: 'butt' },
-  { name: 'Dash', value: 'dash' },
-  { name: 'Dots', value: 'dots' },
-  { name: 'Zigzag', value: 'zigzag' },
-  { name: 'Pattern', value: 'pattern' },
+  { name: 'Round', value: 'round', description: 'Round brush tip' },
+  { name: 'Square', value: 'square', description: 'Square brush tip' },
+  { name: 'Butt', value: 'butt', description: 'Flat brush tip' },
+  { name: 'Thin', value: 'round-thin', description: 'Thin line (round)' },
+  { name: 'Medium', value: 'round-medium', description: 'Medium line (round)' },
+  { name: 'Bold', value: 'round-bold', description: 'Bold line (round)' },
+  { name: 'Marker', value: 'round-marker', description: 'Marker style (large, partially transparent)' },
 ];
 
-// Custom style for dash, dots, zigzag, and pattern brush types
-const getCustomBrushStyle = (type: string, context: CanvasRenderingContext2D) => {
-  switch (type) {
-    case 'dash':
-      context.setLineDash([10, 5]);
-      context.lineCap = 'butt';
-      break;
-    case 'dots':
-      context.setLineDash([2, 8]);
-      context.lineCap = 'round';
-      break;
-    case 'zigzag':
-      context.setLineDash([10, 10]);
-      context.lineJoin = 'miter';
-      break;
-    case 'pattern':
-      context.setLineDash([15, 3, 3, 3]);
-      context.lineCap = 'round';
-      break;
-    default:
-      context.setLineDash([]);
-      context.lineCap = type as CanvasLineCap;
-      context.lineJoin = 'round';
-  }
-};
+// ReactSketchCanvas only supports basic line styles
+// More advanced brush styles would require custom canvas implementations
 
 interface DrawingState {
   color: string;
@@ -95,8 +74,7 @@ interface DrawingState {
 
 const TeacherWhiteboard: React.FC = () => {
   const canvasRef = useRef<ReactSketchCanvasRef | null>(null);
-  const customCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const contextRef = useRef<CanvasRenderingContext2D | null>(null);
+
   const [isLive, setIsLive] = useState(false);
   const [showStartModal, setShowStartModal] = useState(false);
   const [showStopModal, setShowStopModal] = useState(false);
@@ -314,10 +292,34 @@ const TeacherWhiteboard: React.FC = () => {
 
   // Handle brush type change
   const handleBrushTypeChange = (type: string) => {
-    setDrawingState(prev => ({
-      ...prev,
-      brushType: type
-    }));
+    // Handle special brush types that require adjusting multiple properties
+    const newState = { ...drawingState, brushType: type };
+
+    switch (type) {
+      case 'round-thin':
+        newState.strokeWidth = 2; // Very thin
+        newState.brushType = 'round';
+        break;
+      case 'round-medium':
+        newState.strokeWidth = 6; // Medium width
+        newState.brushType = 'round';
+        break;
+      case 'round-bold':
+        newState.strokeWidth = 12; // Bold width
+        newState.brushType = 'round';
+        break;
+      case 'round-marker':
+        newState.strokeWidth = 16; // Large width
+        newState.opacity = 0.7; // Partially transparent
+        newState.brushType = 'round';
+        break;
+      default:
+        // For standard brush types (round, square, butt)
+        newState.brushType = type;
+        break;
+    }
+
+    setDrawingState(newState);
     setOpenDropdown(null);
   };
 
@@ -575,12 +577,17 @@ const TeacherWhiteboard: React.FC = () => {
                       <button
                         key={brush.value}
                         onClick={() => handleBrushTypeChange(brush.value)}
-                        className={`flex items-center gap-2 px-3 py-2 rounded hover:bg-gray-100 ${
-                          drawingState.brushType === brush.value ? 'bg-gray-100' : ''
+                        className={`flex items-center justify-between px-3 py-2 rounded hover:bg-gray-100 ${
+                          (drawingState.brushType === brush.value ||
+                           (brush.value.startsWith('round-') && drawingState.brushType === 'round'))
+                            ? 'bg-gray-100' : ''
                         }`}
                       >
-                        <Paintbrush size={16} />
-                        <span>{brush.name}</span>
+                        <div className="flex items-center gap-2">
+                          <Paintbrush size={16} />
+                          <span>{brush.name}</span>
+                        </div>
+                        <span className="text-xs text-gray-500">{(brush as any).description}</span>
                       </button>
                     ))}
                   </div>
@@ -601,6 +608,7 @@ const TeacherWhiteboard: React.FC = () => {
             exportWithBackgroundImage={false}
             withTimestamp={false}
             allowOnlyPointerType="all"
+            lineCap={drawingState.brushType as "round" | "butt" | "square"}
             style={{
               opacity: drawingState.opacity,
             }}
