@@ -54,11 +54,7 @@ const OPACITY_OPTIONS = [
 const BRUSH_TYPES = [
   { name: 'Round', value: 'round', description: 'Round brush tip' },
   { name: 'Square', value: 'square', description: 'Square brush tip' },
-  { name: 'Butt', value: 'butt', description: 'Flat brush tip' },
-  { name: 'Thin', value: 'round-thin', description: 'Thin line (round)' },
-  { name: 'Medium', value: 'round-medium', description: 'Medium line (round)' },
-  { name: 'Bold', value: 'round-bold', description: 'Bold line (round)' },
-  { name: 'Marker', value: 'round-marker', description: 'Marker style (large, partially transparent)' },
+  { name: 'triangle', value: 'triangle', description: 'triangle brush tip' },
 ];
 
 // ReactSketchCanvas only supports basic line styles
