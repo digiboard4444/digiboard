@@ -1,15 +1,14 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
-import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown, Square } from 'lucide-react';
+import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown } from 'lucide-react';
 import { io } from 'socket.io-client';
 import type { TypedSocket } from '../../types/socket';
 
-// Global socket instance to maintain connection across brush changes
-let globalSocket: TypedSocket | null = null;
+let socket: TypedSocket | null = null;
 
 const initializeSocket = () => {
-  if (!globalSocket) {
-    globalSocket = io(import.meta.env.VITE_API_URL, {
+  if (!socket) {
+    socket = io(import.meta.env.VITE_API_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: 5,
@@ -18,12 +17,8 @@ const initializeSocket = () => {
       withCredentials: true
     }) as TypedSocket;
   }
-  return globalSocket;
+  return socket;
 };
-
-// Canvas dimensions
-const DEFAULT_CANVAS_WIDTH = 800;
-const DEFAULT_CANVAS_HEIGHT = 600;
 
 // Stroke styles configuration
 const COLORS = [
@@ -54,12 +49,15 @@ const OPACITY_OPTIONS = [
   { name: '100%', value: 1.0 },
 ];
 
-// Custom brush types
+// ReactSketchCanvas only supports 'round', 'butt', and 'square' line caps
+// For other effects, we'll need a custom solution later
 const BRUSH_TYPES = [
-  { name: 'Circle', value: 'round', description: 'Round brush tip', icon: Circle },
-  { name: 'Square', value: 'square', description: 'Square brush tip', icon: Square },
-  { name: 'Triangle', value: 'triangle', description: 'Triangle brush tip', icon: Paintbrush },
+  { name: 'Round', value: 'round', description: 'Round brush tip' },
+  { name: 'Square', value: 'square', description: 'Square brush tip' },
 ];
+
+// ReactSketchCanvas only supports basic line styles
+// More advanced brush styles would require custom canvas implementations
 
 interface DrawingState {
   color: string;
@@ -69,33 +67,15 @@ interface DrawingState {
   isEraser: boolean;
 }
 
-// Custom triangle brush implementation
-const TriangleBrush = ({ size, color }: { size: number, color: string }) => {
-  const halfSize = size / 2;
-  return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-      <polygon
-        points={`${halfSize},0 ${size},${size} 0,${size}`}
-        fill={color}
-      />
-    </svg>
-  );
-};
-
 const TeacherWhiteboard: React.FC = () => {
   const canvasRef = useRef<ReactSketchCanvasRef | null>(null);
-  const canvasContainerRef = useRef<HTMLDivElement | null>(null);
-  const customCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const lastPointRef = useRef<{ x: number, y: number } | null>(null);
-  const socketRef = useRef<TypedSocket | null>(null);
 
   const [isLive, setIsLive] = useState(false);
   const [showStartModal, setShowStartModal] = useState(false);
   const [showStopModal, setShowStopModal] = useState(false);
-  const [canvasSize, setCanvasSize] = useState({ width: DEFAULT_CANVAS_WIDTH, height: DEFAULT_CANVAS_HEIGHT });
+  const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
   const [error, setError] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
-  const [isDrawing, setIsDrawing] = useState(false);
 
   // Drawing state
   const [drawingState, setDrawingState] = useState<DrawingState>({
@@ -112,14 +92,47 @@ const TeacherWhiteboard: React.FC = () => {
   // Custom stroke history for undo/redo
   const [strokeHistory, setStrokeHistory] = useState<any[]>([]);
   const [redoStack, setRedoStack] = useState<any[]>([]);
-  const [customStrokes, setCustomStrokes] = useState<any[]>([]);
 
-  // Initialize socket once on component mount and store in ref
   useEffect(() => {
-    socketRef.current = initializeSocket();
+    const handleResize = () => {
+      const container = document.getElementById('whiteboard-container');
+      if (container) {
+        const width = container.clientWidth;
+        const height = Math.min(window.innerHeight - 200, width * 0.75);
+        setCanvasSize({ width, height });
+      }
+    };
 
-    // Setup socket event handlers
-    const socket = socketRef.current;
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const handleStroke = useCallback(async () => {
+    if (isLive && canvasRef.current && socket) {
+      try {
+        const paths = await canvasRef.current.exportPaths();
+        const userId = localStorage.getItem('userId');
+
+        // Update stroke history for undo/redo
+        setStrokeHistory(prevHistory => [...prevHistory, paths]);
+        setRedoStack([]);
+
+        if (userId) {
+          console.log('Sending whiteboard update');
+          socket.emit('whiteboardUpdate', {
+            teacherId: userId,
+            whiteboardData: JSON.stringify(paths)
+          });
+        }
+      } catch (error) {
+        console.error('Error handling stroke:', error);
+      }
+    }
+  }, [isLive]);
+
+  useEffect(() => {
+    const socket = initializeSocket();
     const userId = localStorage.getItem('userId');
 
     const handleConnect = () => {
@@ -127,12 +140,13 @@ const TeacherWhiteboard: React.FC = () => {
       setIsConnecting(false);
       if (isLive && userId) {
         socket.emit('startLive', userId);
-        sendWhiteboardUpdate(); // Send current canvas state
+        handleStroke(); // Send current canvas state
       }
     };
 
     const handleDisconnect = () => {
       console.log('Disconnected from server');
+      setIsLive(false);
       setIsConnecting(true);
     };
 
@@ -153,240 +167,11 @@ const TeacherWhiteboard: React.FC = () => {
       socket.off('connect', handleConnect);
       socket.off('disconnect', handleDisconnect);
       socket.off('liveError', handleLiveError);
-
       if (userId && isLive) {
         socket.emit('stopLive', userId);
       }
     };
-  }, []);
-
-
-
-  // Update isLive state effect - separate from the socket setup
-  useEffect(() => {
-    if (!socketRef.current) return;
-
-    const userId = localStorage.getItem('userId');
-    if (isLive && userId) {
-      socketRef.current.emit('startLive', userId);
-      sendWhiteboardUpdate();
-    }
-  }, [isLive]);
-
-  useEffect(() => {
-    const handleResize = () => {
-      const container = document.getElementById('whiteboard-container');
-      if (container) {
-        const width = container.clientWidth;
-        const height = Math.min(window.innerHeight - 200, width * 0.75);
-        setCanvasSize({ width, height });
-      }
-    };
-
-    handleResize();
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
-
-  // Setup custom canvas when using triangle brush
-  useEffect(() => {
-    if (drawingState.brushType === 'triangle') {
-      if (!customCanvasRef.current && canvasContainerRef.current) {
-        const canvas = document.createElement('canvas');
-        canvas.width = canvasSize.width;
-        canvas.height = canvasSize.height;
-        canvas.style.position = 'absolute';
-        canvas.style.top = '0';
-        canvas.style.left = '0';
-        canvas.style.pointerEvents = 'none';
-        canvas.style.zIndex = '10';
-        customCanvasRef.current = canvas;
-        canvasContainerRef.current.appendChild(canvas);
-      }
-    } else {
-      if (customCanvasRef.current && canvasContainerRef.current) {
-        canvasContainerRef.current.removeChild(customCanvasRef.current);
-        customCanvasRef.current = null;
-      }
-    }
-  }, [drawingState.brushType, canvasSize]);
-
-  // Separate function to send whiteboard updates
-  const sendWhiteboardUpdate = useCallback(async () => {
-    if (!isLive || !socketRef.current) return;
-
-    try {
-      let data: any = [];
-
-      if (drawingState.brushType === 'triangle') {
-        // For custom triangle brush, use custom strokes
-        data = customStrokes;
-      } else if (canvasRef.current) {
-        // For standard brushes, use the built-in paths
-        data = await canvasRef.current.exportPaths();
-      }
-
-      const userId = localStorage.getItem('userId');
-
-      if (userId) {
-        socketRef.current.emit('whiteboardUpdate', {
-          teacherId: userId,
-          whiteboardData: JSON.stringify({
-            brushType: drawingState.brushType,
-            strokes: data
-          })
-        });
-      }
-    } catch (error) {
-      console.error('Error sending whiteboard update:', error);
-    }
-  }, [isLive, drawingState.brushType, customStrokes]);
-
-  // When using standard brushes, send updates to students
-   const handleStroke = useCallback(async () => {
-    if (!isLive) return;
-
-    try {
-      // Update stroke history
-      if (drawingState.brushType === 'triangle') {
-        setStrokeHistory(prevHistory => [...prevHistory, customStrokes]);
-      } else if (canvasRef.current) {
-        const paths = await canvasRef.current.exportPaths();
-        setStrokeHistory(prevHistory => [...prevHistory, paths]);
-      }
-
-      setRedoStack([]);
-
-      // Send update to students
-      sendWhiteboardUpdate();
-    } catch (error) {
-      console.error('Error handling stroke:', error);
-    }
-  }, [isLive, drawingState.brushType, customStrokes, sendWhiteboardUpdate]);
-
-  // Then update handleStandardStroke to include handleStroke in dependencies
-  const handleStandardStroke = useCallback(async () => {
-    if (isLive && canvasRef.current && drawingState.brushType !== 'triangle') {
-      try {
-        const paths = await canvasRef.current.exportPaths();
-
-        // Update stroke history for undo/redo
-        setStrokeHistory(prevHistory => [...prevHistory, paths]);
-        setRedoStack([]);
-
-        // Send update to students
-        sendWhiteboardUpdate();
-      } catch (error) {
-        console.error('Error handling stroke:', error);
-      }
-    }
-  }, [isLive, drawingState.brushType, sendWhiteboardUpdate]);
-
-  // Draw triangle function
-  const drawTriangle = useCallback((startX: number, startY: number, size: number, color: string) => {
-    if (!customCanvasRef.current) return;
-
-    const ctx = customCanvasRef.current.getContext('2d');
-    if (!ctx) return;
-
-    const halfSize = size / 2;
-
-    ctx.fillStyle = color;
-    ctx.globalAlpha = drawingState.opacity;
-
-    ctx.beginPath();
-    ctx.moveTo(startX, startY - halfSize); // top point
-    ctx.lineTo(startX - halfSize, startY + halfSize); // bottom left
-    ctx.lineTo(startX + halfSize, startY + halfSize); // bottom right
-    ctx.closePath();
-    ctx.fill();
-  }, [drawingState.opacity]);
-
-  // Handle custom brush strokes
-  const handleTriangleStroke = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    if (!isLive || drawingState.brushType !== 'triangle' || drawingState.isEraser) return;
-
-    // Get mouse/touch position
-    let clientX: number, clientY: number;
-
-    if ('touches' in e) {
-      // Touch event
-      clientX = e.touches[0].clientX;
-      clientY = e.touches[0].clientY;
-    } else {
-      // Mouse event
-      clientX = e.clientX;
-      clientY = e.clientY;
-    }
-
-    if (!canvasContainerRef.current) return;
-
-    const rect = canvasContainerRef.current.getBoundingClientRect();
-    const x = clientX - rect.left;
-    const y = clientY - rect.top;
-
-    // Draw triangle at this position
-    drawTriangle(x, y, drawingState.strokeWidth * 2, drawingState.color);
-
-    // Add to custom strokes
-    setCustomStrokes(prev => [...prev, {
-      type: 'triangle',
-      x,
-      y,
-      size: drawingState.strokeWidth * 2,
-      color: drawingState.color,
-      opacity: drawingState.opacity
-    }]);
-
-    lastPointRef.current = { x, y };
-  }, [isLive, drawingState, drawTriangle]);
-
-
-
-
-  // Mouse/touch event handlers for custom brush
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (drawingState.brushType === 'triangle') {
-      setIsDrawing(true);
-      handleTriangleStroke(e);
-    }
-  }, [drawingState.brushType, handleTriangleStroke]);
-
-  const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (isDrawing && drawingState.brushType === 'triangle') {
-      handleTriangleStroke(e);
-    }
-  }, [isDrawing, drawingState.brushType, handleTriangleStroke]);
-
-  const handleMouseUp = useCallback(() => {
-    if (isDrawing && drawingState.brushType === 'triangle') {
-      setIsDrawing(false);
-      // Update stroke history and send update to students
-      handleStroke();
-    }
-  }, [isDrawing, drawingState.brushType, handleStroke]);
-
-  const handleTouchStart = useCallback((e: React.TouchEvent) => {
-    if (drawingState.brushType === 'triangle') {
-      setIsDrawing(true);
-      handleTriangleStroke(e);
-    }
-  }, [drawingState.brushType, handleTriangleStroke]);
-
-  const handleTouchMove = useCallback((e: React.TouchEvent) => {
-    if (isDrawing && drawingState.brushType === 'triangle') {
-      handleTriangleStroke(e);
-    }
-  }, [isDrawing, drawingState.brushType, handleTriangleStroke]);
-
-  const handleTouchEnd = useCallback(() => {
-    if (isDrawing && drawingState.brushType === 'triangle') {
-      setIsDrawing(false);
-      // Update stroke history and send update to students
-      handleStroke();
-    }
-  }, [isDrawing, drawingState.brushType, handleStroke]);
-
+  }, [isLive, handleStroke]);
 
   const handleStartLive = () => {
     setError(null);
@@ -399,65 +184,55 @@ const TeacherWhiteboard: React.FC = () => {
 
   const confirmStartLive = async () => {
     const userId = localStorage.getItem('userId');
+    const socket = initializeSocket();
 
-    if (userId && canvasRef.current && socketRef.current) {
+    if (userId && canvasRef.current) {
       setIsLive(true);
       setShowStartModal(false);
-
-      // Signal live session start
-      socketRef.current.emit('startLive', userId);
+      socket.emit('startLive', userId);
 
       // Send initial canvas state
-      sendWhiteboardUpdate();
+      const paths = await canvasRef.current.exportPaths();
+      socket.emit('whiteboardUpdate', {
+        teacherId: userId,
+        whiteboardData: JSON.stringify(paths)
+      });
     }
   };
 
   const confirmStopLive = () => {
     const userId = localStorage.getItem('userId');
+    const socket = initializeSocket();
 
-    if (userId && socketRef.current) {
-      socketRef.current.emit('stopLive', userId);
+    if (userId) {
       setIsLive(false);
       setShowStopModal(false);
-
+      socket.emit('stopLive', userId);
       if (canvasRef.current) {
         canvasRef.current.clearCanvas();
       }
-
-      // Reset history and custom canvas
+      // Reset history
       setStrokeHistory([]);
       setRedoStack([]);
-      setCustomStrokes([]);
-
-      if (customCanvasRef.current && canvasContainerRef.current) {
-        const ctx = customCanvasRef.current.getContext('2d');
-        if (ctx) {
-          ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
-        }
-      }
     }
   };
 
   const handleClearCanvas = async () => {
     if (canvasRef.current && isLive) {
       await canvasRef.current.clearCanvas();
+      const userId = localStorage.getItem('userId');
+      const socket = initializeSocket();
 
-      // Clear custom canvas if it exists
-      if (customCanvasRef.current) {
-        const ctx = customCanvasRef.current.getContext('2d');
-        if (ctx) {
-          ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
-        }
+      if (userId) {
+        socket.emit('whiteboardUpdate', {
+          teacherId: userId,
+          whiteboardData: JSON.stringify([])
+        });
       }
-
-      setCustomStrokes([]);
 
       // Reset history
       setStrokeHistory([]);
       setRedoStack([]);
-
-      // Send empty canvas to students
-      sendWhiteboardUpdate();
     }
   };
 
@@ -512,27 +287,34 @@ const TeacherWhiteboard: React.FC = () => {
 
   // Handle brush type change
   const handleBrushTypeChange = (type: string) => {
-    // Clear any existing custom canvas if switching brush types
-    if (customCanvasRef.current && type !== 'triangle') {
-      const ctx = customCanvasRef.current.getContext('2d');
-      if (ctx) {
-        ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
-      }
+    // Handle special brush types that require adjusting multiple properties
+    const newState = { ...drawingState, brushType: type };
+
+    switch (type) {
+      case 'round-thin':
+        newState.strokeWidth = 2; // Very thin
+        newState.brushType = 'round';
+        break;
+      case 'round-medium':
+        newState.strokeWidth = 6; // Medium width
+        newState.brushType = 'round';
+        break;
+      case 'round-bold':
+        newState.strokeWidth = 12; // Bold width
+        newState.brushType = 'round';
+        break;
+      case 'round-marker':
+        newState.strokeWidth = 16; // Large width
+        newState.opacity = 0.7; // Partially transparent
+        newState.brushType = 'round';
+        break;
+      default:
+        // For standard brush types (round, square, butt)
+        newState.brushType = type;
+        break;
     }
 
-    setDrawingState(prev => ({
-      ...prev,
-      brushType: type,
-      isEraser: false
-    }));
-
-    // Notify students of brush change without affecting live status
-    if (isLive) {
-      setTimeout(() => {
-        sendWhiteboardUpdate();
-      }, 100);
-    }
-
+    setDrawingState(newState);
     setOpenDropdown(null);
   };
 
@@ -555,16 +337,15 @@ const TeacherWhiteboard: React.FC = () => {
       setStrokeHistory(newHistory);
       setRedoStack(prev => [...prev, lastPath]);
 
-      // Clear custom canvas if using triangle brush
-      if (customCanvasRef.current) {
-        const ctx = customCanvasRef.current.getContext('2d');
-        if (ctx) {
-          ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
-        }
-      }
-
       // Send updated canvas state
-      sendWhiteboardUpdate();
+      const paths = await canvasRef.current.exportPaths();
+      const userId = localStorage.getItem('userId');
+      if (userId && socket) {
+        socket.emit('whiteboardUpdate', {
+          teacherId: userId,
+          whiteboardData: JSON.stringify(paths)
+        });
+      }
     }
   };
 
@@ -580,21 +361,15 @@ const TeacherWhiteboard: React.FC = () => {
       setStrokeHistory(prev => [...prev, pathToRestore]);
 
       // Send updated canvas state
-      sendWhiteboardUpdate();
+      const paths = await canvasRef.current.exportPaths();
+      const userId = localStorage.getItem('userId');
+      if (userId && socket) {
+        socket.emit('whiteboardUpdate', {
+          teacherId: userId,
+          whiteboardData: JSON.stringify(paths)
+        });
+      }
     }
-  };
-
-  // Render brush icon based on type
-  const renderBrushIcon = (brushType: string) => {
-    const brush = BRUSH_TYPES.find(b => b.value === brushType);
-    if (!brush) return <Paintbrush size={16} />;
-
-    if (brushType === 'triangle') {
-      return <TriangleBrush size={16} color="currentColor" />;
-    }
-
-    const IconComponent = brush.icon;
-    return <IconComponent size={16} />;
   };
 
   return (
@@ -685,10 +460,8 @@ const TeacherWhiteboard: React.FC = () => {
               <button
                 onClick={() => toggleDropdown('color')}
                 className="flex items-center gap-2 px-3 py-2 rounded hover:bg-gray-100"
-                style={{
-                  backgroundColor: drawingState.isEraser ? 'white' : drawingState.color,
-                  color: drawingState.isEraser || drawingState.color === '#FFFFFF' || drawingState.color === '#FFFF00' ? 'black' : 'white'
-                }}
+                style={{ backgroundColor: drawingState.isEraser ? 'white' : drawingState.color,
+                         color: drawingState.isEraser || drawingState.color === '#FFFFFF' || drawingState.color === '#FFFF00' ? 'black' : 'white' }}
               >
                 <div className="w-4 h-4 rounded-full" style={{
                   backgroundColor: drawingState.isEraser ? 'white' : drawingState.color,
@@ -787,7 +560,7 @@ const TeacherWhiteboard: React.FC = () => {
                 onClick={() => toggleDropdown('brush')}
                 className="flex items-center gap-2 px-3 py-2 rounded hover:bg-gray-100"
               >
-                {renderBrushIcon(drawingState.brushType)}
+                <Paintbrush size={16} />
                 <span>Brush</span>
                 <ChevronDown size={16} />
               </button>
@@ -800,17 +573,16 @@ const TeacherWhiteboard: React.FC = () => {
                         key={brush.value}
                         onClick={() => handleBrushTypeChange(brush.value)}
                         className={`flex items-center justify-between px-3 py-2 rounded hover:bg-gray-100 ${
-                          drawingState.brushType === brush.value ? 'bg-gray-100' : ''}`}
+                          (drawingState.brushType === brush.value ||
+                           (brush.value.startsWith('round-') && drawingState.brushType === 'round'))
+                            ? 'bg-gray-100' : ''
+                        }`}
                       >
                         <div className="flex items-center gap-2">
-                          {brush.value === 'triangle' ? (
-                            <TriangleBrush size={16} color="currentColor" />
-                          ) : (
-                            <brush.icon size={16} />
-                          )}
+                          <Paintbrush size={16} />
                           <span>{brush.name}</span>
                         </div>
-                        <span className="text-xs text-gray-500">{brush.description}</span>
+                        <span className="text-xs text-gray-500">{(brush as any).description}</span>
                       </button>
                     ))}
                   </div>
@@ -820,18 +592,7 @@ const TeacherWhiteboard: React.FC = () => {
           </div>
         )}
 
-        <div
-          id="whiteboard-container"
-          className="border rounded-lg overflow-hidden bg-white relative"
-          ref={canvasContainerRef}
-          onMouseDown={drawingState.brushType === 'triangle' ? handleMouseDown : undefined}
-          onMouseMove={drawingState.brushType === 'triangle' ? handleMouseMove : undefined}
-          onMouseUp={drawingState.brushType === 'triangle' ? handleMouseUp : undefined}
-          onMouseLeave={drawingState.brushType === 'triangle' ? handleMouseUp : undefined}
-          onTouchStart={drawingState.brushType === 'triangle' ? handleTouchStart : undefined}
-          onTouchMove={drawingState.brushType === 'triangle' ? handleTouchMove : undefined}
-          onTouchEnd={drawingState.brushType === 'triangle' ? handleTouchEnd : undefined}
-        >
+        <div id="whiteboard-container" className="border rounded-lg overflow-hidden bg-white">
           <ReactSketchCanvas
             ref={canvasRef}
             strokeWidth={drawingState.strokeWidth}
@@ -842,14 +603,13 @@ const TeacherWhiteboard: React.FC = () => {
             exportWithBackgroundImage={false}
             withTimestamp={false}
             allowOnlyPointerType="all"
-            lineCap={drawingState.brushType !== 'triangle' ? (drawingState.brushType as "round" | "butt" | "square") : "round"}
+            lineCap={drawingState.brushType as "round" | "butt" | "square"}
             style={{
               opacity: drawingState.opacity,
-              pointerEvents: drawingState.brushType === 'triangle' ? 'none' : 'auto'
             }}
             className="touch-none"
-            onStroke={handleStandardStroke}
-            onChange={handleStandardStroke}
+            onStroke={handleStroke}
+            onChange={handleStroke}
           />
         </div>
       </div>
