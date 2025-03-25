@@ -3,6 +3,7 @@ import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
 import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown, Minus } from 'lucide-react';
 import { io } from 'socket.io-client';
 import type { TypedSocket } from '../../types/socket';
+import { drawCircleBrush, drawDottedLineBrush, StrokePoint, BrushOptions } from '../../lib/brushUtils';
 import {
   COLORS,
   STROKE_SIZES,
@@ -35,14 +36,10 @@ const initializeSocket = () => {
   return socket;
 };
 
-// This will be used to create a dotted pattern
-const createDottedStrokePattern = (color: string) => {
-  return `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='1'%3E%3Crect x='0' y='0' width='2' height='1' fill='${encodeURIComponent(color)}' /%3E%3Crect x='2' y='0' width='2' height='1' fill='%23FFFFFF' /%3E%3Crect x='4' y='0' width='2' height='1' fill='${encodeURIComponent(color)}' /%3E%3C/svg%3E")`;
-};
-
 const TeacherWhiteboard: React.FC = () => {
   const canvasRef = useRef<ReactSketchCanvasRef | null>(null);
-  const customCanvasWrapperRef = useRef<HTMLDivElement | null>(null);
+  const customCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const customCtxRef = useRef<CanvasRenderingContext2D | null>(null);
 
   const [isLive, setIsLive] = useState(false);
   const [showStartModal, setShowStartModal] = useState(false);
@@ -76,33 +73,18 @@ const TeacherWhiteboard: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Apply dotted line pattern to the canvas when brush type changes
+  // Initialize custom canvas for specialized brushes
   useEffect(() => {
-    if (customCanvasWrapperRef.current) {
-      const canvasElement = customCanvasWrapperRef.current.querySelector('canvas');
+    const canvas = document.createElement('canvas');
+    canvas.width = canvasSize.width;
+    canvas.height = canvasSize.height;
 
-      if (canvasElement) {
-        if (drawingState.brushType === 'dotted-line' && !drawingState.isEraser) {
-          // Apply a custom style directly to the canvas element
-          const ctx = canvasElement.getContext('2d');
-          if (ctx) {
-            // We need to get the computed stroke width
-            const computedStrokeWidth = drawingState.strokeWidth;
-
-            // Update the canvas context with the dotted line pattern
-            ctx.setLineDash([2, 2]); // 2px dash, 2px gap
-            // We must apply this when drawing happens, but ReactSketchCanvas doesn't expose this directly
-          }
-        } else {
-          // Reset to solid line
-          const ctx = canvasElement.getContext('2d');
-          if (ctx) {
-            ctx.setLineDash([]); // Reset to solid line
-          }
-        }
-      }
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      customCanvasRef.current = canvas;
+      customCtxRef.current = ctx;
     }
-  }, [drawingState.brushType, drawingState.isEraser, drawingState.color]);
+  }, [canvasSize]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -119,28 +101,6 @@ const TeacherWhiteboard: React.FC = () => {
         setStrokeHistory(prevHistory => [...prevHistory, paths]);
         setRedoStack([]);
 
-        // Apply dotted line style if needed
-        if (drawingState.brushType === 'dotted-line' && !drawingState.isEraser && customCanvasWrapperRef.current) {
-          const canvasElement = customCanvasWrapperRef.current.querySelector('canvas');
-          if (canvasElement) {
-            // Add custom dotted line styling
-            // This is complex since we need to modify the already drawn paths
-            // ReactSketchCanvas doesn't provide direct access to this
-
-            // One approach is to use CSS to style path elements if using SVG under the hood
-            const svgElement = customCanvasWrapperRef.current.querySelector('svg');
-            if (svgElement) {
-              const paths = svgElement.querySelectorAll('path');
-              paths.forEach(path => {
-                // Only apply to the most recently added path
-                if (path === paths[paths.length - 1]) {
-                  path.setAttribute('stroke-dasharray', '2,2');
-                }
-              });
-            }
-          }
-        }
-
         if (userId) {
           console.log('Sending whiteboard update');
           socket.emit('whiteboardUpdate', {
@@ -152,7 +112,28 @@ const TeacherWhiteboard: React.FC = () => {
         console.error('Error handling stroke:', error);
       }
     }
-  }, [isLive, drawingState.brushType, drawingState.isEraser, drawingState.color]);
+  }, [isLive]);
+
+  // Apply the appropriate brush based on the type
+  const applyBrush = useCallback((point: StrokePoint) => {
+    if (!customCtxRef.current) return;
+
+    const options: BrushOptions = {
+      color: drawingState.isEraser ? '#FFFFFF' : drawingState.color,
+      size: drawingState.strokeWidth,
+      opacity: drawingState.opacity
+    };
+
+    switch (drawingState.brushType) {
+      case 'dotted-line':
+        drawDottedLineBrush(customCtxRef.current, point, options);
+        break;
+      case 'circle':
+      default:
+        drawCircleBrush(customCtxRef.current, point, options);
+        break;
+    }
+  }, [drawingState]);
 
   useEffect(() => {
     const socket = initializeSocket();
@@ -314,16 +295,6 @@ const TeacherWhiteboard: React.FC = () => {
       default:
         return <Circle size={16} />;
     }
-  };
-
-  // This overrides the standard path rendering to use dotted lines when appropriate
-  const getPathStyles = () => {
-    if (drawingState.brushType === 'dotted-line' && !drawingState.isEraser) {
-      return {
-        strokeDasharray: '2, 2' // Apply dashed line effect: 2px dash, 2px gap
-      };
-    }
-    return {};
   };
 
   return (
@@ -547,29 +518,24 @@ const TeacherWhiteboard: React.FC = () => {
         )}
 
         <div id="whiteboard-container" className="border rounded-lg overflow-hidden bg-white">
-          <div ref={customCanvasWrapperRef} className={drawingState.brushType === 'dotted-line' ? 'dotted-canvas' : ''}>
-            <ReactSketchCanvas
-              ref={canvasRef}
-              strokeWidth={drawingState.strokeWidth}
-              strokeColor={drawingState.isEraser ? "#FFFFFF" : drawingState.color}
-              canvasColor="white"
-              width={`${canvasSize.width}px`}
-              height={`${canvasSize.height}px`}
-              exportWithBackgroundImage={false}
-              withTimestamp={false}
-              allowOnlyPointerType="all"
-              lineCap="round"
-              // Apply dotted style via inline SVG attributes if this is a dotted brush
-              pathType="stroke"
-              svgStyle={getPathStyles()}
-              style={{
-                opacity: drawingState.opacity,
-              }}
-              className="touch-none"
-              onStroke={handleStroke}
-              onChange={handleStroke}
-            />
-          </div>
+          <ReactSketchCanvas
+            ref={canvasRef}
+            strokeWidth={drawingState.strokeWidth}
+            strokeColor={drawingState.isEraser ? "#FFFFFF" : drawingState.color}
+            canvasColor="white"
+            width={`${canvasSize.width}px`}
+            height={`${canvasSize.height}px`}
+            exportWithBackgroundImage={false}
+            withTimestamp={false}
+            allowOnlyPointerType="all"
+            lineCap="round"
+            style={{
+              opacity: drawingState.opacity,
+            }}
+            className="touch-none"
+            onStroke={handleStroke}
+            onChange={handleStroke}
+          />
         </div>
       </div>
 
@@ -623,15 +589,6 @@ const TeacherWhiteboard: React.FC = () => {
             </div>
           </div>
         </div>
-      )}
-
-      {/* CSS for dotted line styling */}
-      {drawingState.brushType === 'dotted-line' && !drawingState.isEraser && (
-        <style jsx>{`
-          .dotted-canvas :global(svg path) {
-            stroke-dasharray: 2px, 2px;
-          }
-        `}</style>
       )}
     </>
   );
