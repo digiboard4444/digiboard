@@ -29,25 +29,17 @@ export const OPACITY_OPTIONS = [
   { name: '100%', value: 1.0 },
 ];
 
-// Available drawing tools
-export const DRAWING_TOOLS = [
-  { name: 'Brush', value: 'brush', icon: 'Paintbrush', description: 'Free-form brush' },
-  { name: 'Eraser', value: 'eraser', icon: 'Eraser', description: 'Erase content' }
-];
-
-// Available shapes
-export const SHAPES = [
-  { name: 'Rectangle', value: 'rectangle', icon: 'Square', description: 'Draw rectangle' },
-  { name: 'Triangle', value: 'triangle', icon: 'Triangle', description: 'Draw triangle' }
+export const BRUSH_TYPES = [
+  { name: 'Circle', value: 'circle', icon: 'Circle', description: 'Round brush tip' },
+  { name: 'Dotted Circle', value: 'dotted-circle', icon: 'Circle', description: 'Dotted circular brush' },
 ];
 
 export interface DrawingState {
   color: string;
   strokeWidth: number;
   opacity: number;
-  tool: string;      // Current selected tool (brush, eraser, shape)
-  shape: string;     // Current selected shape (rectangle, triangle, etc.)
-  isDrawingShape: boolean; // Whether currently drawing a shape
+  brushType: string;
+  isEraser: boolean;
 }
 
 // Default drawing state
@@ -55,9 +47,8 @@ export const DEFAULT_DRAWING_STATE: DrawingState = {
   color: COLORS[0].value,
   strokeWidth: STROKE_SIZES[2].value,
   opacity: OPACITY_OPTIONS[4].value,
-  tool: 'brush',
-  shape: 'rectangle',
-  isDrawingShape: false
+  brushType: 'circle',
+  isEraser: false,
 };
 
 // Function to handle color change
@@ -100,31 +91,28 @@ export const handleOpacityChange = (
   setOpenDropdown(null);
 };
 
-// Function to handle drawing tool change
-export const handleToolChange = (
-  tool: string,
+// Function to handle brush type change
+export const handleBrushTypeChange = (
+  type: string,
   setDrawingState: React.Dispatch<React.SetStateAction<DrawingState>>,
   setOpenDropdown: React.Dispatch<React.SetStateAction<string | null>>
 ) => {
   setDrawingState(prev => ({
     ...prev,
-    tool
+    brushType: type,
+    isEraser: false
   }));
   setOpenDropdown(null);
 };
 
-// Function to handle shape change
-export const handleShapeChange = (
-  shape: string,
-  setDrawingState: React.Dispatch<React.SetStateAction<DrawingState>>,
-  setOpenDropdown: React.Dispatch<React.SetStateAction<string | null>>
+// Function to toggle eraser
+export const toggleEraser = (
+  setDrawingState: React.Dispatch<React.SetStateAction<DrawingState>>
 ) => {
   setDrawingState(prev => ({
     ...prev,
-    shape,
-    tool: 'shape' // Automatically switch to shape drawing mode
+    isEraser: !prev.isEraser
   }));
-  setOpenDropdown(null);
 };
 
 // Function to toggle dropdown
