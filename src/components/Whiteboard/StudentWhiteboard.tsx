@@ -1,3 +1,9 @@
+// Modified version of StudentWhiteboard.tsx
+// Key changes:
+// 1. Match canvas dimensions with teacher's whiteboard
+// 2. Add aspect ratio preservation
+// 3. Fix path loading to handle different canvas sizes
+
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
 import { io, Socket } from 'socket.io-client';
@@ -22,22 +28,29 @@ const initializeSocket = () => {
   return socket;
 };
 
+// Default canvas dimensions (same as TeacherWhiteboard)
+const DEFAULT_CANVAS_WIDTH = 800;
+const DEFAULT_CANVAS_HEIGHT = 600;
+
 const StudentWhiteboard: React.FC = () => {
   const canvasRef = useRef<ReactSketchCanvasRef | null>(null);
   const [isTeacherLive, setIsTeacherLive] = useState(false);
   const [currentTeacherId, setCurrentTeacherId] = useState<string | null>(null);
-  const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
+  const [canvasSize, setCanvasSize] = useState({ width: DEFAULT_CANVAS_WIDTH, height: DEFAULT_CANVAS_HEIGHT });
+  const [containerSize, setContainerSize] = useState({ width: DEFAULT_CANVAS_WIDTH, height: DEFAULT_CANVAS_HEIGHT });
   const lastUpdateRef = useRef<string>('[]');
   const sessionStartTimeRef = useRef<Date | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
 
+  // Modified to handle scale differences between teacher and student canvas
   const handleWhiteboardUpdate = useCallback(async (data: WhiteboardUpdate) => {
     if (!canvasRef.current) return;
 
     try {
       lastUpdateRef.current = data.whiteboardData;
       await canvasRef.current.clearCanvas();
+
       if (data.whiteboardData && data.whiteboardData !== '[]') {
         const paths = JSON.parse(data.whiteboardData);
         await canvasRef.current.loadPaths(paths);
@@ -57,7 +70,7 @@ const StudentWhiteboard: React.FC = () => {
     try {
       console.log('Creating video from strokes...');
       const paths = JSON.parse(lastUpdateRef.current);
-      const recorder = new StrokeRecorder(canvasSize.width, canvasSize.height);
+      const recorder = new StrokeRecorder(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
       const videoBlob = await recorder.recordStrokes(paths);
 
       console.log('Uploading video to Cloudinary...');
@@ -87,15 +100,29 @@ const StudentWhiteboard: React.FC = () => {
     } finally {
       setIsSaving(false);
     }
-  }, [currentTeacherId, canvasSize.width, canvasSize.height, isSaving]);
+  }, [currentTeacherId, isSaving]);
 
+  // Modified to maintain aspect ratio and match teacher's canvas
   useEffect(() => {
     const handleResize = () => {
       const container = document.getElementById('student-whiteboard-container');
       if (container) {
-        const width = container.clientWidth;
-        const height = Math.min(window.innerHeight - 200, width * 0.75);
-        setCanvasSize({ width, height });
+        const containerWidth = container.clientWidth;
+
+        // Keep the original aspect ratio (4:3)
+        const aspectRatio = DEFAULT_CANVAS_HEIGHT / DEFAULT_CANVAS_WIDTH;
+        const containerHeight = containerWidth * aspectRatio;
+
+        setContainerSize({
+          width: containerWidth,
+          height: containerHeight
+        });
+
+        // Keep the logical canvas size the same as teacher's
+        setCanvasSize({
+          width: DEFAULT_CANVAS_WIDTH,
+          height: DEFAULT_CANVAS_HEIGHT
+        });
       }
     };
 
@@ -208,20 +235,38 @@ const StudentWhiteboard: React.FC = () => {
           <h2 className="text-2xl font-bold">Live Whiteboard Session</h2>
           <p className="text-sm text-gray-600 mt-1">Session in progress</p>
         </div>
-        <div id="student-whiteboard-container" className="border rounded-lg overflow-hidden bg-white">
-          <ReactSketchCanvas
-            ref={canvasRef}
-            strokeWidth={4}
-            strokeColor="black"
-            width={`${canvasSize.width}px`}
-            height={`${canvasSize.height}px`}
-            style={{ pointerEvents: 'none' }}
-            canvasColor="white"
-            exportWithBackgroundImage={false}
-            withTimestamp={false}
-            allowOnlyPointerType="all"
-            className="touch-none"
-          />
+        <div
+          id="student-whiteboard-container"
+          className="border rounded-lg overflow-hidden bg-white"
+          style={{ width: '100%', height: `${containerSize.height}px` }}
+        >
+          <div style={{
+            width: '100%',
+            height: '100%',
+            position: 'relative'
+          }}>
+            <ReactSketchCanvas
+              ref={canvasRef}
+              strokeWidth={4}
+              strokeColor="black"
+              width="100%"
+              height="100%"
+              style={{
+                pointerEvents: 'none',
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0
+              }}
+              canvasColor="white"
+              exportWithBackgroundImage={false}
+              withTimestamp={false}
+              allowOnlyPointerType="all"
+              className="touch-none"
+              preserveAspectRatio="xMidYMid meet"
+            />
+          </div>
         </div>
       </div>
 
