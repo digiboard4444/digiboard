@@ -1,9 +1,9 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
-import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown, Square, Triangle } from 'lucide-react';
+import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown } from 'lucide-react';
 import { io } from 'socket.io-client';
 import type { TypedSocket } from '../../types/socket';
-import { drawCircleBrush, drawSquareBrush, drawTriangleBrush, StrokePoint, BrushOptions } from '../../lib/brushUtils';
+import { drawCircleBrush, drawDottedCircleBrush, StrokePoint, BrushOptions } from '../../lib/brushUtils';
 
 let socket: TypedSocket | null = null;
 
@@ -50,11 +50,10 @@ const OPACITY_OPTIONS = [
   { name: '100%', value: 1.0 },
 ];
 
-// Simplified brush types - only circle, square, and triangle
+// Simplified brush types - only circle and dotted circle
 const BRUSH_TYPES = [
   { name: 'Circle', value: 'circle', icon: Circle, description: 'Round brush tip' },
-  { name: 'Square', value: 'square', icon: Square, description: 'Square brush tip' },
-  { name: 'Triangle', value: 'triangle', icon: Triangle, description: 'Triangle brush tip' },
+  { name: 'Dotted Circle', value: 'dotted-circle', icon: Circle, description: 'Dotted circular brush' },
 ];
 
 interface DrawingState {
@@ -155,11 +154,8 @@ const TeacherWhiteboard: React.FC = () => {
     };
 
     switch (drawingState.brushType) {
-      case 'square':
-        drawSquareBrush(customCtxRef.current, point, options);
-        break;
-      case 'triangle':
-        drawTriangleBrush(customCtxRef.current, point, options);
+      case 'dotted-circle':
+        drawDottedCircleBrush(customCtxRef.current, point, options);
         break;
       case 'circle':
       default:
@@ -568,7 +564,7 @@ const TeacherWhiteboard: React.FC = () => {
               )}
             </div>
 
-            {/* Brush Type Selector - Simplified to just 3 options */}
+            {/* Brush Type Selector - Simplified to just 2 options */}
             <div className="relative" onClick={(e) => e.stopPropagation()}>
               <button
                 onClick={() => toggleDropdown('brush')}
@@ -618,7 +614,7 @@ const TeacherWhiteboard: React.FC = () => {
             exportWithBackgroundImage={false}
             withTimestamp={false}
             allowOnlyPointerType="all"
-            lineCap={drawingState.brushType === 'square' ? 'square' : 'round'}
+            lineCap="round"
             style={{
               opacity: drawingState.opacity,
             }}

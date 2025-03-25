@@ -1,77 +1,56 @@
-// Interface for brush strokes
 export interface StrokePoint {
-    x: number;
-    y: number;
-  }
+  x: number;
+  y: number;
+  pressure?: number;
+}
 
-  export interface BrushOptions {
-    color: string;
-    size: number;
-    opacity: number;
-  }
+export interface BrushOptions {
+  color: string;
+  size: number;
+  opacity: number;
+}
 
-  /**
-   * Draw a circular brush stroke (default)
-   */
-  export const drawCircleBrush = (
-    ctx: CanvasRenderingContext2D,
-    point: StrokePoint,
-    options: BrushOptions
-  ) => {
-    ctx.save();
+/**
+ * Draws a regular circle brush at the given point
+ */
+export const drawCircleBrush = (
+  ctx: CanvasRenderingContext2D,
+  point: StrokePoint,
+  options: BrushOptions
+) => {
+  const { x, y } = point;
+  const { color, size, opacity } = options;
 
-    ctx.fillStyle = options.color;
-    ctx.globalAlpha = options.opacity;
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.globalAlpha = opacity;
+  ctx.beginPath();
+  ctx.arc(x, y, size / 2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+};
 
-    // Draw a circle
-    ctx.beginPath();
-    ctx.arc(point.x, point.y, options.size / 2, 0, Math.PI * 2);
-    ctx.fill();
+/**
+ * Draws a dotted circle brush at the given point
+ */
+export const drawDottedCircleBrush = (
+  ctx: CanvasRenderingContext2D,
+  point: StrokePoint,
+  options: BrushOptions
+) => {
+  const { x, y } = point;
+  const { color, size, opacity } = options;
 
-    ctx.restore();
-  };
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.globalAlpha = opacity;
+  ctx.lineWidth = Math.max(1, size / 8);  // Adjust line width based on size
 
-  /**
-   * Draw a square brush stroke
-   */
-  export const drawSquareBrush = (
-    ctx: CanvasRenderingContext2D,
-    point: StrokePoint,
-    options: BrushOptions
-  ) => {
-    ctx.save();
+  // Create dotted line effect
+  ctx.setLineDash([size / 4, size / 3]);  // Set dot and gap sizes relative to brush size
 
-    ctx.fillStyle = options.color;
-    ctx.globalAlpha = options.opacity;
-
-    // Draw a square
-    const halfSize = options.size / 2;
-    ctx.fillRect(point.x - halfSize, point.y - halfSize, options.size, options.size);
-
-    ctx.restore();
-  };
-
-  /**
-   * Draw a triangle brush stroke
-   */
-  export const drawTriangleBrush = (
-    ctx: CanvasRenderingContext2D,
-    point: StrokePoint,
-    options: BrushOptions
-  ) => {
-    ctx.save();
-
-    ctx.fillStyle = options.color;
-    ctx.globalAlpha = options.opacity;
-
-    // Draw a triangle
-    const size = options.size;
-    ctx.beginPath();
-    ctx.moveTo(point.x, point.y - size / 2); // Top point
-    ctx.lineTo(point.x - size / 2, point.y + size / 2); // Bottom left
-    ctx.lineTo(point.x + size / 2, point.y + size / 2); // Bottom right
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.restore();
-  };
+  ctx.beginPath();
+  ctx.arc(x, y, size / 2, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+};
