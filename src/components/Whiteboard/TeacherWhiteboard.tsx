@@ -179,14 +179,21 @@ const TeacherWhiteboard: React.FC = () => {
         .then(() => {
           setIsAudioRecording(true);
           console.log('Audio recording started successfully');
+
+          // Emit event to notify students about audio recording state
+          const userId = localStorage.getItem('userId');
+          if (userId && socket) {
+            socket.emit('audioToggle', {
+              teacherId: userId,
+              enabled: true
+            });
+          }
         })
         .catch((err) => {
           console.error('Error in audio recording:', err);
-          // Don't set any error state to avoid disrupting the session
         });
     } catch (error) {
       console.error('Error initiating audio recording:', error);
-      // Don't propagate the error
     }
   };
 
@@ -200,6 +207,16 @@ const TeacherWhiteboard: React.FC = () => {
       const audioBlob = await audioRecorderRef.current.stopRecording();
       setIsAudioRecording(false);
       console.log('Stopped audio recording, blob size:', audioBlob.size);
+
+      // Emit event to notify students audio recording has stopped
+      const userId = localStorage.getItem('userId');
+      if (userId && socket) {
+        socket.emit('audioToggle', {
+          teacherId: userId,
+          enabled: false
+        });
+      }
+
       return audioBlob;
     } catch (error) {
       console.error('Error stopping audio recording:', error);

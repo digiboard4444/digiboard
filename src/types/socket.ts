@@ -29,6 +29,7 @@ export interface ServerToClientEvents {
   teacherOffline: (data: TeacherStatus) => void;
   liveError: (data: LiveError) => void;
   sessionEnded: (data: SessionEndedData) => void;
+  audioToggle: (data: { teacherId: string, enabled: boolean }) => void;
 }
 
 export interface ClientToServerEvents {
@@ -40,6 +41,7 @@ export interface ClientToServerEvents {
   leaveTeacherRoom: (teacherId: string) => void;
   audioData: (data: AudioData) => void;
   sessionEnded: (data: SessionEndedData) => void;
+  audioToggle: (data: { teacherId: string, enabled: boolean }) => void;
 }
 
 export type TypedSocket = Socket<ServerToClientEvents, ClientToServerEvents>;

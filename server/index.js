@@ -58,6 +58,11 @@ io.on('connection', (socket) => {
   let isStudent = false;
   let isAudioActive = false; // Track audio status separately from live status
 
+  socket.on('audioToggle', (data) => {
+    // Broadcast to all students in the teacher's room
+    io.to(data.teacherId).emit('audioToggle', data);
+  });
+
   // Handle teacher status check
   socket.on('checkTeacherStatus', () => {
     // Send current live teacher to the requesting client
