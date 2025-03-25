@@ -12,56 +12,86 @@ const SavedLessonPlayer: React.FC<SavedLessonPlayerProps> = ({ videoUrl }) => {
 
   // Reset player state when video URL changes
   useEffect(() => {
+    let timeoutId: NodeJS.Timeout;
+
     if (videoRef.current) {
+      // Reset state
       videoRef.current.pause();
       setIsPlaying(false);
       setIsReady(false);
 
       // For videos that might have CORS issues, add a fallback timeout
-      const timeoutId = setTimeout(() => {
-        if (!isReady) {
-          console.log("Video loading timed out, setting ready state manually");
-          setIsReady(true);
-        }
+      // But only once per URL change
+      timeoutId = setTimeout(() => {
+        console.log("Video loading timed out, setting ready state manually");
+        setIsReady(true);
       }, 3000);
-
-      return () => clearTimeout(timeoutId);
     }
-  }, [videoUrl, isReady]);
+
+    // Clean up timeout when component unmounts or URL changes
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, [videoUrl]);
+
+  // Prevent multiple play attempts at once
+  const isAttemptingPlayRef = useRef(false);
 
   const handlePlayPause = useCallback(() => {
-    if (!videoRef.current || !isReady) return;
+    if (!videoRef.current || !isReady || isAttemptingPlayRef.current) return;
 
     if (isPlaying) {
       videoRef.current.pause();
       setIsPlaying(false);
     } else {
+      isAttemptingPlayRef.current = true;
+
       // Wrap in try/catch to handle potential play() failures
       try {
+        console.log("Attempting to play video");
+
         // Force a reload if the video has failed previously
         if (videoRef.current.error) {
+          console.log("Video has error, reloading before play");
           videoRef.current.load();
+
           setTimeout(() => {
-            if (videoRef.current) {
-              const playPromise = videoRef.current.play();
-              if (playPromise !== undefined) {
-                playPromise
-                  .then(() => setIsPlaying(true))
-                  .catch(error => {
-                    console.error("Error playing video after reload:", error);
-                    setIsPlaying(false);
-                  });
-              }
+            if (!videoRef.current) {
+              isAttemptingPlayRef.current = false;
+              return;
+            }
+
+            console.log("Playing after reload");
+            const playPromise = videoRef.current.play();
+
+            if (playPromise !== undefined) {
+              playPromise
+                .then(() => {
+                  setIsPlaying(true);
+                  isAttemptingPlayRef.current = false;
+                })
+                .catch(error => {
+                  console.error("Error playing video after reload:", error);
+                  setIsPlaying(false);
+                  isAttemptingPlayRef.current = false;
+                });
+            } else {
+              isAttemptingPlayRef.current = false;
             }
           }, 500);
           return;
         }
 
+        // Normal play attempt
         const playPromise = videoRef.current.play();
 
         if (playPromise !== undefined) {
           playPromise
-            .then(() => setIsPlaying(true))
+            .then(() => {
+              console.log("Video playback started successfully");
+              setIsPlaying(true);
+              isAttemptingPlayRef.current = false;
+            })
             .catch(error => {
               console.error("Error playing video:", error);
               setIsPlaying(false);
@@ -73,18 +103,34 @@ const SavedLessonPlayer: React.FC<SavedLessonPlayerProps> = ({ videoUrl }) => {
                   videoRef.current.load();
                   setTimeout(() => {
                     if (videoRef.current) {
+                      console.log("Playing after AbortError");
                       videoRef.current.play()
-                        .then(() => setIsPlaying(true))
-                        .catch(e => console.error("Failed to play after reload:", e));
+                        .then(() => {
+                          setIsPlaying(true);
+                          isAttemptingPlayRef.current = false;
+                        })
+                        .catch(e => {
+                          console.error("Failed to play after reload:", e);
+                          isAttemptingPlayRef.current = false;
+                        });
+                    } else {
+                      isAttemptingPlayRef.current = false;
                     }
                   }, 500);
+                } else {
+                  isAttemptingPlayRef.current = false;
                 }
+              } else {
+                isAttemptingPlayRef.current = false;
               }
             });
+        } else {
+          isAttemptingPlayRef.current = false;
         }
       } catch (error) {
         console.error("Error playing video:", error);
         setIsPlaying(false);
+        isAttemptingPlayRef.current = false;
       }
     }
   }, [isPlaying, isReady]);
@@ -140,8 +186,12 @@ const SavedLessonPlayer: React.FC<SavedLessonPlayerProps> = ({ videoUrl }) => {
     setIsPlaying(false);
   };
 
+  // Use a ref to track if canPlay has fired already
+  const canPlayFiredRef = useRef(false);
+
   const handleCanPlay = useCallback(() => {
     console.log("Video can play now");
+    canPlayFiredRef.current = true;
     setIsReady(true);
   }, []);
 
@@ -149,19 +199,35 @@ const SavedLessonPlayer: React.FC<SavedLessonPlayerProps> = ({ videoUrl }) => {
     const videoElement = e.target as HTMLVideoElement;
     console.error("Video error:", videoElement.error);
 
-    // Don't set isReady to false if it was previously true - we'll try to recover
-    if (!isReady) {
-      setIsReady(false);
-    }
     setIsPlaying(false);
 
-    // Try to recover by switching to a different source format if available
-    if (videoElement.error && videoElement.error.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) {
-      console.log("Media source not supported, trying to recover...");
-      // Force ready state after a delay to allow at least UI interaction
-      setTimeout(() => setIsReady(true), 2000);
+    // If canPlay event never fired, set to not ready
+    if (!canPlayFiredRef.current) {
+      setIsReady(false);
     }
-  }, [isReady]);
+
+    // Try to recover from media errors
+    if (videoElement.error) {
+      console.log(`Media error code: ${videoElement.error.code}, trying to recover...`);
+
+      // Force reload for network errors
+      if (videoElement.error.code === MediaError.MEDIA_ERR_NETWORK ||
+          videoElement.error.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) {
+
+        // Try to reload the video after a short delay
+        setTimeout(() => {
+          if (videoRef.current) {
+            videoRef.current.load();
+            // Force ready state after reload to allow UI interaction
+            setTimeout(() => setIsReady(true), 1000);
+          }
+        }, 500);
+      } else {
+        // For other errors, just enable the UI
+        setTimeout(() => setIsReady(true), 1000);
+      }
+    }
+  }, []);
 
   return (
     <div className="p-4">
@@ -184,10 +250,11 @@ const SavedLessonPlayer: React.FC<SavedLessonPlayerProps> = ({ videoUrl }) => {
             className="w-full h-full object-contain bg-gray-50"
             src={videoUrl}
             playsInline
+            onLoadedData={handleCanPlay}
             onCanPlay={handleCanPlay}
             onEnded={handleVideoEnd}
             onError={handleError}
-            preload="metadata"
+            preload="auto"
             crossOrigin="anonymous"
           >
             Your browser does not support the video tag.
