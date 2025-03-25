@@ -1,8 +1,9 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
 import { io, Socket } from 'socket.io-client';
-import { WhiteboardUpdate, TeacherStatus } from '../../types/socket';
+import { WhiteboardUpdate, TeacherStatus, SessionEndedData } from '../../types/socket';
 import { StrokeRecorder } from '../../lib/strokeRecorder';
+import { AudioRecorder } from '../../lib/audioRecorder';
 import { uploadSessionRecording } from '../../lib/cloudinary';
 import { Loader2, AlertCircle } from 'lucide-react';
 
@@ -31,6 +32,8 @@ const StudentWhiteboard: React.FC = () => {
   const sessionStartTimeRef = useRef<Date | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [hasSessionAudio, setHasSessionAudio] = useState(false);
+  const [sessionSaved, setSessionSaved] = useState(false);
 
   const handleWhiteboardUpdate = useCallback(async (data: WhiteboardUpdate) => {
     if (!canvasRef.current) return;
@@ -48,8 +51,19 @@ const StudentWhiteboard: React.FC = () => {
   }, []);
 
   const saveSession = useCallback(async () => {
-    if (!currentTeacherId || !lastUpdateRef.current || isSaving) {
-      console.log('No session data to save or already saving');
+    // Prevent saving if:
+    // 1. No teacher ID
+    // 2. No whiteboard data
+    // 3. Already saving
+    // 4. Already saved for this session
+    if (!currentTeacherId || !lastUpdateRef.current || isSaving || sessionSaved) {
+      console.log('No session data to save, already saving, or already saved');
+      return;
+    }
+
+    // Also don't save if the whiteboard data is empty
+    if (lastUpdateRef.current === '[]') {
+      console.log('No whiteboard content to save');
       return;
     }
 
@@ -59,9 +73,40 @@ const StudentWhiteboard: React.FC = () => {
       const paths = JSON.parse(lastUpdateRef.current);
       const recorder = new StrokeRecorder(canvasSize.width, canvasSize.height);
       const videoBlob = await recorder.recordStrokes(paths);
+      let videoUrl;
 
-      console.log('Uploading video to Cloudinary...');
-      const videoUrl = await uploadSessionRecording(videoBlob);
+      // The rest of the function remains the same
+      if (hasSessionAudio) {
+        try {
+          // Get audio blob from the server
+          const audioResponse = await fetch(`${import.meta.env.VITE_API_URL}/api/sessions/audio/${currentTeacherId}`, {
+            headers: {
+              'Authorization': `Bearer ${localStorage.getItem('token')}`
+            }
+          });
+
+          if (audioResponse.ok) {
+            const audioBlob = await audioResponse.blob();
+            console.log('Received audio blob, merging with video...');
+
+            // Create an AudioRecorder instance to merge audio and video
+            const audioRecorder = new AudioRecorder();
+            const mergedBlob = await audioRecorder.mergeAudioAndVideo(audioBlob, videoBlob);
+
+            // Upload the merged video
+            videoUrl = await uploadSessionRecording(mergedBlob);
+          } else {
+            console.warn('Failed to get audio recording, proceeding with video only');
+            videoUrl = await uploadSessionRecording(videoBlob);
+          }
+        } catch (error) {
+          console.error('Error processing audio, falling back to video only:', error);
+          videoUrl = await uploadSessionRecording(videoBlob);
+        }
+      } else {
+        // No audio, just upload the video
+        videoUrl = await uploadSessionRecording(videoBlob);
+      }
 
       console.log('Saving session to backend...');
       const response = await fetch(`${import.meta.env.VITE_API_URL}/api/sessions`, {
@@ -73,7 +118,8 @@ const StudentWhiteboard: React.FC = () => {
         body: JSON.stringify({
           teacherId: currentTeacherId,
           videoUrl,
-          whiteboardData: lastUpdateRef.current
+          whiteboardData: lastUpdateRef.current,
+          hasAudio: hasSessionAudio
         })
       });
 
@@ -82,12 +128,13 @@ const StudentWhiteboard: React.FC = () => {
       }
 
       console.log('Session saved successfully');
+      setSessionSaved(true);
     } catch (error) {
       console.error('Error saving session:', error);
     } finally {
       setIsSaving(false);
     }
-  }, [currentTeacherId, canvasSize.width, canvasSize.height, isSaving]);
+  }, [currentTeacherId, canvasSize.width, canvasSize.height, isSaving, hasSessionAudio, sessionSaved]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -113,10 +160,26 @@ const StudentWhiteboard: React.FC = () => {
       setCurrentTeacherId(data.teacherId);
       socket.emit('joinTeacherRoom', data.teacherId);
       sessionStartTimeRef.current = new Date();
+      // Important: Reset the sessionSaved flag when a new session starts
+      setSessionSaved(false);
     };
 
-    const handleTeacherOffline = async () => {
-      await saveSession();
+    const handleSessionEnded = async (data: SessionEndedData) => {
+      if (currentTeacherId === data.teacherId) {
+        setHasSessionAudio(data.hasAudio);
+        // Don't save here - wait for the teacherOffline event
+      }
+    };
+
+    const handleTeacherOffline = async (data: TeacherStatus) => {
+      // Only save if this is the teacher we're currently viewing
+      // and we have some whiteboard data
+      if (currentTeacherId === data.teacherId &&
+          lastUpdateRef.current !== '[]' &&
+          !sessionSaved) {
+        await saveSession();
+      }
+
       setIsTeacherLive(false);
       setCurrentTeacherId(null);
       sessionStartTimeRef.current = null;
@@ -143,9 +206,17 @@ const StudentWhiteboard: React.FC = () => {
       setConnectionError('Connection lost. Attempting to reconnect...');
     };
 
+    const handleAudioAvailable = (data: { teacherId: string }) => {
+      if (currentTeacherId === data.teacherId) {
+        setHasSessionAudio(true);
+      }
+    };
+
     socket.on('whiteboardUpdate', handleWhiteboardUpdate);
     socket.on('teacherOnline', handleTeacherOnline);
     socket.on('teacherOffline', handleTeacherOffline);
+    socket.on('sessionEnded', handleSessionEnded);
+    socket.on('audioAvailable', handleAudioAvailable);
     socket.on('connect', handleConnect);
     socket.on('connect_error', handleConnectError);
     socket.on('disconnect', handleDisconnect);
@@ -156,6 +227,8 @@ const StudentWhiteboard: React.FC = () => {
       socket.off('whiteboardUpdate', handleWhiteboardUpdate);
       socket.off('teacherOnline', handleTeacherOnline);
       socket.off('teacherOffline', handleTeacherOffline);
+      socket.off('sessionEnded', handleSessionEnded);
+      socket.off('audioAvailable', handleAudioAvailable);
       socket.off('connect', handleConnect);
       socket.off('connect_error', handleConnectError);
       socket.off('disconnect', handleDisconnect);
@@ -164,7 +237,7 @@ const StudentWhiteboard: React.FC = () => {
         socket.emit('leaveTeacherRoom', currentTeacherId);
       }
     };
-  }, [handleWhiteboardUpdate, saveSession, currentTeacherId]);
+  }, [handleWhiteboardUpdate, saveSession, currentTeacherId, sessionSaved]);
 
   if (connectionError) {
     return (

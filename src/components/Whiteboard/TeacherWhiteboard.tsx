@@ -3,6 +3,7 @@ import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
 import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown, Square, Triangle, Mic, MicOff } from 'lucide-react';
 import { io } from 'socket.io-client';
 import type { TypedSocket } from '../../types/socket';
+import { AudioRecorder } from '../../lib/audioRecorder';
 
 // Define brush utility interfaces and functions inline
 interface StrokePoint {
@@ -79,63 +80,6 @@ const initializeSocket = () => {
   }
   return socket;
 };
-
-// Audio recording functionality
-class AudioRecorder {
-  private mediaRecorder: MediaRecorder | null = null;
-  private audioChunks: Blob[] = [];
-  private stream: MediaStream | null = null;
-
-  async startRecording(): Promise<void> {
-    try {
-      // Request microphone access
-      this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-      // Create MediaRecorder with audio stream
-      this.mediaRecorder = new MediaRecorder(this.stream);
-
-      this.audioChunks = [];
-
-      // Listen for data available event
-      this.mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          this.audioChunks.push(event.data);
-        }
-      };
-
-      // Start recording
-      this.mediaRecorder.start(1000); // Collect data in 1-second chunks
-      console.log('Audio recording started');
-    } catch (error) {
-      console.error('Error starting audio recording:', error);
-      throw new Error('Failed to start audio recording');
-    }
-  }
-
-  async stopRecording(): Promise<Blob> {
-    return new Promise((resolve, reject) => {
-      if (!this.mediaRecorder) {
-        reject(new Error('No recording in progress'));
-        return;
-      }
-
-      this.mediaRecorder.onstop = () => {
-        // Clean up tracks
-        if (this.stream) {
-          this.stream.getTracks().forEach(track => track.stop());
-          this.stream = null;
-        }
-
-        // Create audio blob
-        const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
-        console.log('Audio recording stopped, blob size:', audioBlob.size);
-        resolve(audioBlob);
-      };
-
-      this.mediaRecorder.stop();
-    });
-  }
-}
 
 // Stroke styles configuration
 const COLORS = [
@@ -331,12 +275,17 @@ const TeacherWhiteboard: React.FC = () => {
 
   // Toggle audio recording state
   const toggleAudio = () => {
-    setIsAudioEnabled(prev => !prev);
-    if (isAudioRecording) {
-      stopAudioRecording().catch(err => {
-        console.error('Error stopping audio recording:', err);
-      });
+    if (!isLive) return;
+
+    if (isAudioEnabled && !isAudioRecording) {
+      // If we're turning on audio while already live, start recording
+      startAudioRecording().catch(console.error);
+    } else if (isAudioRecording) {
+      // If we're turning off audio while recording, stop recording
+      stopAudioRecording().catch(console.error);
     }
+
+    setIsAudioEnabled(prev => !prev);
   };
 
   useEffect(() => {
@@ -441,33 +390,40 @@ const TeacherWhiteboard: React.FC = () => {
         audioBlob = await stopAudioRecording();
       }
 
-      // Close the session
-      setIsLive(false);
-      setShowStopModal(false);
-
-      // Notify about session end
+      // If audio was recorded, send it
       if (audioBlob) {
-        // Convert blob to base64 for transmission
-        const reader = new FileReader();
-        reader.readAsDataURL(audioBlob);
-        reader.onloadend = () => {
-          const base64data = reader.result as string;
+        try {
+          // Convert to base64 for transmission
+          const reader = new FileReader();
+          reader.readAsDataURL(audioBlob);
 
-          // Emit the audio data
-          socket.emit('audioData', {
-            teacherId: userId,
-            audioData: base64data
-          });
+          reader.onloadend = () => {
+            const base64data = reader.result as string;
 
-          // Emit session ended with audio flag
+            // Send audio data to server
+            socket.emit('audioData', {
+              teacherId: userId,
+              audioData: base64data
+            });
+
+            // Notify that session ended with audio
+            socket.emit('sessionEnded', {
+              teacherId: userId,
+              hasAudio: true
+            });
+
+            // Then stop the live session
+            socket.emit('stopLive', userId);
+          };
+        } catch (error) {
+          console.error('Error processing audio:', error);
+          // Just stop the session if audio processing fails
           socket.emit('sessionEnded', {
             teacherId: userId,
-            hasAudio: true
+            hasAudio: false
           });
-
-          // Then stop the live session
           socket.emit('stopLive', userId);
-        };
+        }
       } else {
         // No audio, just stop the session
         socket.emit('sessionEnded', {
@@ -476,6 +432,9 @@ const TeacherWhiteboard: React.FC = () => {
         });
         socket.emit('stopLive', userId);
       }
+
+      setIsLive(false);
+      setShowStopModal(false);
 
       if (canvasRef.current) {
         canvasRef.current.clearCanvas();
@@ -822,7 +781,7 @@ const TeacherWhiteboard: React.FC = () => {
 
             {/* Brush Type Selector - Simplified to just 3 options */}
             <div className="relative" onClick={(e) => e.stopPropagation()}>
-              <button
+            <button
                 onClick={() => toggleDropdown('brush')}
                 className="flex items-center gap-2 px-3 py-2 rounded hover:bg-gray-100"
               >

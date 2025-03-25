@@ -1,17 +1,51 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { toBlobURL } from '@ffmpeg/util';
 
 export class AudioRecorder {
   private mediaRecorder: MediaRecorder | null = null;
   private audioChunks: Blob[] = [];
   private stream: MediaStream | null = null;
-  private ffmpeg = new FFmpeg();
+  private ffmpeg: FFmpeg | null = null;
   private isRecording = false;
 
   constructor() {}
 
   private async init() {
-    if (!this.ffmpeg.loaded) {
-      await this.ffmpeg.load();
+    if (!this.ffmpeg) {
+      this.ffmpeg = new FFmpeg();
+
+      try {
+        // Use toBlobURL to avoid CORS issues
+        const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.9/dist/esm';
+
+        const coreURL = await toBlobURL(
+          `${baseURL}/ffmpeg-core.js`,
+          'text/javascript',
+        );
+
+        const wasmURL = await toBlobURL(
+          `${baseURL}/ffmpeg-core.wasm`,
+          'application/wasm',
+        );
+
+        // Optional: worker URL if needed
+        const workerURL = await toBlobURL(
+          `${baseURL}/ffmpeg-core.worker.js`,
+          'text/javascript',
+        );
+
+        await this.ffmpeg.load({
+          coreURL,
+          wasmURL,
+          workerURL,
+          logger: () => {}, // Silent logger
+        });
+
+        console.log('FFmpeg loaded successfully');
+      } catch (error) {
+        console.error('Failed to load FFmpeg:', error);
+        throw new Error('Failed to initialize audio processor');
+      }
     }
   }
 
@@ -78,6 +112,10 @@ export class AudioRecorder {
 
   public async mergeAudioAndVideo(audioBlob: Blob, videoBlob: Blob): Promise<Blob> {
     await this.init();
+
+    if (!this.ffmpeg) {
+      throw new Error('FFmpeg not initialized');
+    }
 
     try {
       console.log('Starting audio/video merge...');
