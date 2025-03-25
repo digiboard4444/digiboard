@@ -185,6 +185,8 @@ const TeacherWhiteboard: React.FC = () => {
           const userId = localStorage.getItem('userId');
           if (userId && socket) {
             console.log('Emitting audioToggle event with enabled=true');
+
+            // Use the correct event name that matches the server implementation
             socket.emit('audioToggle', {
               teacherId: userId,
               enabled: true
@@ -193,11 +195,9 @@ const TeacherWhiteboard: React.FC = () => {
         })
         .catch((err) => {
           console.error('Error in audio recording:', err);
-          // Don't set any error state to avoid disrupting the session
         });
     } catch (error) {
       console.error('Error initiating audio recording:', error);
-      // Don't propagate the error
     }
   };
 
@@ -212,6 +212,8 @@ const TeacherWhiteboard: React.FC = () => {
       const userId = localStorage.getItem('userId');
       if (userId && socket && isAudioRecording) {
         console.log('Emitting audioToggle event with enabled=false');
+
+        // Use the correct event name that matches the server implementation
         socket.emit('audioToggle', {
           teacherId: userId,
           enabled: false

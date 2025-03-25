@@ -49,6 +49,9 @@ const StudentWhiteboard: React.FC = () => {
   const lastStatusTimestamp = useRef<number>(Date.now());
   const isProcessingOffline = useRef<boolean>(false);
 
+  // CRITICAL FIX: Add flag to ignore teacherOffline events that follow audioToggle
+  const ignoringNextOfflineEvent = useRef<boolean>(false);
+
   const handleWhiteboardUpdate = useCallback(async (data: WhiteboardUpdate) => {
     if (!canvasRef.current) return;
 
@@ -196,8 +199,37 @@ const StudentWhiteboard: React.FC = () => {
       }
     };
 
+    // UPDATED: Handle audio toggle with protection against false offline events
+    const handleAudioToggle = (data: AudioToggleData) => {
+      console.log('Audio toggle event received:', data);
+
+      if (currentTeacherId === data.teacherId) {
+        setIsRecording(data.enabled);
+        console.log('Teacher audio recording status changed to:', data.enabled);
+
+        // CRITICAL FIX: Set a temporary flag to ignore the next teacherOffline event
+        // This protects against any race conditions or incorrect server behavior
+        ignoringNextOfflineEvent.current = true;
+        console.log('Set flag to ignore next teacherOffline event');
+
+        // Clear the flag after a short delay
+        setTimeout(() => {
+          ignoringNextOfflineEvent.current = false;
+          console.log('Cleared flag for ignoring teacherOffline events');
+        }, 1000); // 1000ms should be enough to catch any immediate offline event
+      }
+    };
+
+    // UPDATED: Handle teacher offline with check for audio toggle guard
     const handleTeacherOffline = async (data: TeacherStatus) => {
       console.log('Teacher offline event received:', data.teacherId, 'Current:', currentTeacherId);
+
+      // CRITICAL FIX: Check if we should ignore this offline event (after audio toggle)
+      if (ignoringNextOfflineEvent.current) {
+        console.log('Ignoring teacherOffline event because it followed an audioToggle event');
+        ignoringNextOfflineEvent.current = false;
+        return;
+      }
 
       // If we're already processing an offline event, don't start another one
       if (isProcessingOffline.current) {
@@ -247,15 +279,6 @@ const StudentWhiteboard: React.FC = () => {
 
         // Mark as no longer processing
         isProcessingOffline.current = false;
-      }
-    };
-
-    const handleAudioToggle = (data: AudioToggleData) => {
-      console.log('Audio toggle event received:', data);
-
-      if (currentTeacherId === data.teacherId) {
-        setIsRecording(data.enabled);
-        console.log('Teacher audio recording status changed to:', data.enabled);
       }
     };
 

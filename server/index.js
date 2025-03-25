@@ -36,7 +36,7 @@ const io = new Server(httpServer, {
 const liveTeachers = new Map(); // teacherId -> Set of student sockets
 let currentLiveTeacher = null; // Track the currently live teacher
 
-// NEW: Track audio status separately from live status
+// Track audio status separately from live status
 const teacherAudioStatus = new Map(); // teacherId -> boolean (audio enabled)
 
 // Global map to store audio data temporarily
@@ -56,7 +56,7 @@ app.use('/api/sessions', sessionRoutes);
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
-  console.log('A user connected');
+  console.log('A user connected:', socket.id);
   let currentTeacherId = null;
   let isStudent = false;
 
@@ -132,23 +132,25 @@ io.on('connection', (socket) => {
     }
   });
 
-  // MODIFIED: standardize on audioToggle for both incoming and outgoing events
+  // CRITICAL FIX: Create a proper handler for both audioToggle events
   socket.on('audioToggle', (data) => {
     console.log('Teacher audio toggle event received:', data.teacherId, data.enabled);
 
     // Store audio status separately from live status
     teacherAudioStatus.set(data.teacherId, data.enabled);
 
-    // Broadcast to all students in the teacher's room
-    socket.broadcast.to(`teacher-${data.teacherId}`).emit('audioToggle', {
+    // Only emit to students in the teacher's room
+    io.to(`teacher-${data.teacherId}`).emit('audioToggle', {
       teacherId: data.teacherId,
       enabled: data.enabled
     });
   });
 
-  // For backwards compatibility - redirect to standardized event
+  // Handle for v1 API - redirect all to audioToggle
   socket.on('toggleAudio', (data) => {
-    console.log('Received deprecated toggleAudio event, forwarding to audioToggle');
+    console.log('Received legacy toggleAudio event, converting to audioToggle');
+
+    // Call our standardized handler with the same data
     socket.emit('audioToggle', data);
   });
 
@@ -158,7 +160,7 @@ io.on('connection', (socket) => {
     audioDataMap.set(data.teacherId, data.audioData);
 
     // Notify students that audio is available for this session
-    socket.broadcast.to(`teacher-${data.teacherId}`).emit('audioAvailable', {
+    io.to(`teacher-${data.teacherId}`).emit('audioAvailable', {
       teacherId: data.teacherId
     });
   });
@@ -167,7 +169,7 @@ io.on('connection', (socket) => {
   socket.on('sessionEnded', (data) => {
     console.log('Session ended with audio info:', data);
     // Broadcast to all students in the room that the session has ended with audio info
-    socket.broadcast.to(`teacher-${data.teacherId}`).emit('sessionEnded', data);
+    io.to(`teacher-${data.teacherId}`).emit('sessionEnded', data);
   });
 
   socket.on('joinTeacherRoom', (teacherId) => {
@@ -207,15 +209,12 @@ io.on('connection', (socket) => {
   });
 
   socket.on('whiteboardUpdate', (data) => {
-    // Don't log every update to reduce console noise
-    // console.log('Whiteboard update from teacher:', data.teacherId);
-
     // Broadcast to all students in the room except the sender
     socket.broadcast.to(`teacher-${data.teacherId}`).emit('whiteboardUpdate', data);
   });
 
   socket.on('disconnect', () => {
-    console.log('User disconnected');
+    console.log('User disconnected:', socket.id);
     if (currentTeacherId) {
       if (isStudent) {
         // Remove student from teacher list
