@@ -19,7 +19,7 @@ const initializeSocket = () => {
   return socket;
 };
 
-// Custom StrokeRecorder that works with our modified stroke format
+// Enhanced CustomStrokeRecorder for better video capture
 class CustomStrokeRecorder {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -28,7 +28,7 @@ class CustomStrokeRecorder {
   private mediaRecorder: MediaRecorder | null = null;
   private recordedChunks: Blob[] = [];
   private frameRate: number = 30;
-  private startTime: number = 0;
+  private animationFrameId: number | null = null;
 
   constructor(width: number, height: number) {
     this.width = width;
@@ -36,12 +36,16 @@ class CustomStrokeRecorder {
     this.canvas = document.createElement('canvas');
     this.canvas.width = width;
     this.canvas.height = height;
-    const ctx = this.canvas.getContext('2d');
+    const ctx = this.canvas.getContext('2d', { alpha: false });
     if (!ctx) throw new Error('Could not get canvas context');
     this.ctx = ctx;
+
+    // Set white background initially
+    this.ctx.fillStyle = 'white';
+    this.ctx.fillRect(0, 0, width, height);
   }
 
-  private drawPath(path: any, timestamp: number): void {
+  private drawPath(path: any): void {
     // Skip if path doesn't have valid points
     if (!path || !path.points || !Array.isArray(path.points) || path.points.length === 0) {
       return;
@@ -118,16 +122,16 @@ class CustomStrokeRecorder {
     }
   }
 
-  private createFrame(paths: any[], timestamp: number): void {
-    // Clear canvas for this frame
+  private renderPaths(paths: any[]): void {
+    // Clear canvas with white background
     this.ctx.fillStyle = 'white';
     this.ctx.fillRect(0, 0, this.width, this.height);
 
-    // Draw each path for this frame
+    // Draw each path
     if (Array.isArray(paths)) {
       paths.forEach(path => {
         try {
-          this.drawPath(path, timestamp);
+          this.drawPath(path);
         } catch (error) {
           console.error('Error drawing path:', error);
         }
@@ -135,74 +139,192 @@ class CustomStrokeRecorder {
     }
   }
 
+  // Helper function to create a static image from the paths
+  public async createStaticImage(paths: any[]): Promise<Blob> {
+    // Render all paths to the canvas
+    this.renderPaths(paths);
+
+    // Convert canvas to PNG blob
+    return new Promise((resolve, reject) => {
+      this.canvas.toBlob((blob) => {
+        if (blob) {
+          resolve(blob);
+        } else {
+          reject(new Error("Failed to create image blob from canvas"));
+        }
+      }, 'image/png', 0.95); // High quality PNG
+    });
+  }
+
   public async recordStrokes(paths: any[]): Promise<Blob> {
     return new Promise((resolve, reject) => {
       try {
-        // Set up canvas stream
-        const stream = this.canvas.captureStream(this.frameRate);
+        console.log(`Recording ${paths.length} paths on canvas: ${this.width}x${this.height}`);
 
-        // Set up media recorder
-        const options = {
-          mimeType: 'video/webm;codecs=vp9',
-          videoBitsPerSecond: 2500000 // Increase bitrate for better quality
-        };
+        // FALLBACK APPROACH: If we have less than 2 paths, just create a static image
+        if (paths.length < 2) {
+          console.log("Using static image fallback for simple drawing");
+          this.createStaticImage(paths).then(resolve).catch(reject);
+          return;
+        }
 
-        // Try to create with vp9 first, fallback to other formats if not supported
-        try {
-          this.mediaRecorder = new MediaRecorder(stream, options);
-        } catch (e) {
-          try {
-            this.mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
-          } catch (e) {
-            this.mediaRecorder = new MediaRecorder(stream);
+        // Pre-render the content to ensure it's visible
+        this.renderPaths(paths);
+
+        // Display canvas content for debugging
+        console.log("Canvas data URL:", this.canvas.toDataURL().substring(0, 100) + "...");
+
+        // Set up canvas stream with optimal settings
+        const stream = this.canvas.captureStream(60); // Higher framerate for quality
+
+        // Check if we actually have video tracks
+        if (stream.getVideoTracks().length === 0) {
+          console.error("No video tracks in stream! Falling back to static image");
+          this.createStaticImage(paths).then(resolve).catch(reject);
+          return;
+        }
+
+        // Log stream details for debugging
+        console.log("Stream has video tracks:", stream.getVideoTracks().length);
+        console.log("Video track settings:", stream.getVideoTracks()[0].getSettings());
+
+        // Try different MIME types for better compatibility
+        let mimeType = 'video/webm;codecs=vp9';
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = 'video/webm;codecs=vp8';
+          if (!MediaRecorder.isTypeSupported(mimeType)) {
+            mimeType = 'video/webm';
+            if (!MediaRecorder.isTypeSupported(mimeType)) {
+              mimeType = '';
+            }
           }
         }
+
+        console.log("Using MIME type:", mimeType || "browser default");
+
+        // Create MediaRecorder with best available settings
+        this.mediaRecorder = new MediaRecorder(stream, {
+          mimeType: mimeType || undefined,
+          videoBitsPerSecond: 3000000 // Higher bitrate
+        });
 
         this.recordedChunks = [];
 
         this.mediaRecorder.ondataavailable = (event) => {
+          console.log("Got data chunk of size:", event.data.size);
           if (event.data.size > 0) {
             this.recordedChunks.push(event.data);
           }
         };
 
         this.mediaRecorder.onstop = () => {
+          if (this.recordedChunks.length === 0 || this.recordedChunks.every(chunk => chunk.size === 0)) {
+            console.error("No data recorded! Falling back to static image");
+            this.createStaticImage(paths).then(resolve).catch(reject);
+            return;
+          }
+
           const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
+          console.log("Created final blob of size:", blob.size);
+
+          // For debugging: create a temporary element to check the video
+          const tempVideo = document.createElement('video');
+          tempVideo.src = URL.createObjectURL(blob);
+          tempVideo.onloadedmetadata = () => {
+            console.log("Video metadata:", {
+              duration: tempVideo.duration,
+              videoWidth: tempVideo.videoWidth,
+              videoHeight: tempVideo.videoHeight
+            });
+            URL.revokeObjectURL(tempVideo.src);
+          };
+
           resolve(blob);
+        };
+
+        this.mediaRecorder.onerror = (event) => {
+          console.error("MediaRecorder error:", event);
+          console.log("MediaRecorder error - falling back to static image");
+          this.createStaticImage(paths).then(resolve).catch(reject);
         };
 
         // Start recording
         this.mediaRecorder.start();
-        this.startTime = Date.now();
+        console.log("MediaRecorder started with state:", this.mediaRecorder.state);
 
-        // Create the frame with all paths - this ensures content is visible in the recording
-        this.createFrame(paths, 0);
+        // Animate drawing for better recording - this creates a dynamic sequence
+        let frameCount = 0;
+        const maxFrames = 180; // 3 seconds at 60fps
 
-        // Keep recording for a few seconds to ensure the content is captured
-        setTimeout(() => {
-          if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
-            this.mediaRecorder.stop();
+        const animate = () => {
+          if (frameCount <= maxFrames) {
+            // Ensure content is visible throughout recording
+            if (frameCount % 30 === 0) {
+              this.renderPaths(paths); // Re-render every 30 frames
+            }
+
+            frameCount++;
+            this.animationFrameId = requestAnimationFrame(animate);
           } else {
-            reject(new Error('MediaRecorder is not active'));
+            // Stop animation and recording
+            if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+              console.log("Stopping MediaRecorder after animation");
+              this.mediaRecorder.stop();
+            } else {
+              reject(new Error('MediaRecorder is not active'));
+            }
           }
-        }, 3000); // Record for 3 seconds to ensure a valid video
+        };
+
+        // Start animation
+        this.animationFrameId = requestAnimationFrame(animate);
+
+        // Safety timeout as backup
+        setTimeout(() => {
+          if (this.animationFrameId) {
+            cancelAnimationFrame(this.animationFrameId);
+          }
+
+          if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+            console.log("Stopping MediaRecorder via timeout");
+            this.mediaRecorder.stop();
+          }
+        }, 5000); // 5 second timeout
       } catch (error) {
-        console.error("Error in recordStrokes:", error);
-        reject(error);
+        console.error("Fatal error in recordStrokes:", error);
+        // Attempt to create a static image as a last resort
+        try {
+          console.log("Attempting to create static image after error");
+          const blob = await this.createStaticImage(paths);
+          resolve(blob);
+        } catch (imgError) {
+          reject(error); // If even this fails, reject with the original error
+        }
       }
     });
   }
 }
 
-// Simple mock for uploadSessionRecording
+// Function to upload session recording to backend/cloud storage
 const uploadSessionRecording = async (blob: Blob): Promise<string> => {
-  // In a real implementation, this would upload to Cloudinary
-  // For now, we'll simulate a successful upload
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve('https://example.com/mock-video-url');
-    }, 1000);
-  });
+  try {
+    // Check if we're using the real Cloudinary upload or mock
+    if (typeof window.cloudinaryUpload === 'function') {
+      // Use the real Cloudinary upload function
+      return await window.cloudinaryUpload(blob);
+    } else {
+      // Mock implementation for development/testing
+      console.log('Using mock upload service (real Cloudinary upload not available)');
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          resolve('https://example.com/mock-video-url');
+        }, 1000);
+      });
+    }
+  } catch (error) {
+    console.error('Error in uploadSessionRecording:', error);
+    throw new Error('Failed to upload recording');
+  }
 };
 
 const StudentWhiteboard: React.FC = () => {
@@ -211,7 +333,7 @@ const StudentWhiteboard: React.FC = () => {
   const [currentTeacherId, setCurrentTeacherId] = useState<string | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
   const lastUpdateRef = useRef<string>('[]');
-  const pathsRef = useRef<any[]>([]);  // NEW: Store actual paths object for better recording
+  const pathsRef = useRef<any[]>([]);  // Store actual paths object for better recording
   const sessionStartTimeRef = useRef<Date | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -354,11 +476,32 @@ const StudentWhiteboard: React.FC = () => {
       console.log('Creating video from strokes...');
       console.log('Paths data:', pathsRef.current);
 
-      const recorder = new CustomStrokeRecorder(canvasSize.width, canvasSize.height);
-      const videoBlob = await recorder.recordStrokes(pathsRef.current);
+      // Take a snapshot of the current canvas as a fallback
+      let fallbackImage: Blob | null = null;
+      if (canvasRef.current) {
+        fallbackImage = await new Promise<Blob | null>((resolve) => {
+          canvasRef.current?.toBlob((blob) => resolve(blob), 'image/png', 0.95);
+        });
+      }
 
-      console.log('Uploading video to Cloudinary...');
-      const videoUrl = await uploadSessionRecording(videoBlob);
+      const recorder = new CustomStrokeRecorder(canvasSize.width, canvasSize.height);
+      let mediaBlob: Blob;
+
+      try {
+        // Try to create a video recording
+        mediaBlob = await recorder.recordStrokes(pathsRef.current);
+        console.log('Successfully created video blob:', mediaBlob.size);
+      } catch (error) {
+        console.error('Error creating video, using fallback image:', error);
+        if (fallbackImage) {
+          mediaBlob = fallbackImage;
+        } else {
+          throw new Error('Failed to create recording and no fallback available');
+        }
+      }
+
+      console.log('Uploading media to Cloudinary...');
+      const videoUrl = await uploadSessionRecording(mediaBlob);
 
       console.log('Saving session to backend...');
       const response = await fetch(`${import.meta.env.VITE_API_URL}/api/sessions`, {
@@ -544,5 +687,13 @@ const StudentWhiteboard: React.FC = () => {
     </>
   );
 };
+
+// Add a typing declaration for the cloudinary upload function
+declare global {
+  interface Window {
+    cloudinaryUpload?: (blob: Blob) => Promise<string>;
+    fs: any;
+  }
+}
 
 export default StudentWhiteboard;
