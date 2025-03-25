@@ -35,6 +35,63 @@ const initializeSocket = () => {
   return socket;
 };
 
+// More reliable canvas wrapper component that preserves dotted lines
+const CanvasWrapper = ({
+  children,
+  activeBrush,
+  strokeWidth
+}: {
+  children: React.ReactNode,
+  activeBrush: string,
+  strokeWidth: number
+}) => {
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  // This effect runs when new paths are likely to have been added
+  useEffect(() => {
+    const applyDottedLineStyle = () => {
+      if (wrapperRef.current) {
+        const svgElement = wrapperRef.current.querySelector('svg');
+        if (svgElement) {
+          const pathElements = svgElement.querySelectorAll('path');
+
+          // Get all path elements without our data attribute
+          const newPaths = Array.from(pathElements).filter(path => !path.hasAttribute('data-brush-type'));
+
+          // Mark all new paths with the current brush type
+          newPaths.forEach(path => {
+            path.setAttribute('data-brush-type', activeBrush);
+            path.setAttribute('data-stroke-width', strokeWidth.toString());
+
+            // Apply immediate styling for dotted lines
+            if (activeBrush === 'dotted-line') {
+              path.style.strokeDasharray = `${strokeWidth}px, ${strokeWidth}px`;
+            }
+          });
+
+          // Also ensure that existing dotted lines maintain their style
+          pathElements.forEach(path => {
+            if (path.getAttribute('data-brush-type') === 'dotted-line') {
+              const width = path.getAttribute('data-stroke-width') || strokeWidth.toString();
+              path.style.strokeDasharray = `${width}px, ${width}px`;
+            }
+          });
+        }
+      }
+    };
+
+    // Use a small timeout to ensure the DOM has updated
+    const timeoutId = setTimeout(applyDottedLineStyle, 10);
+    return () => clearTimeout(timeoutId);
+  }, [activeBrush, strokeWidth]);
+
+  return (
+    <div ref={wrapperRef}>
+      {children}
+    </div>
+  );
+};
+
 const TeacherWhiteboard: React.FC = () => {
   const canvasRef = useRef<ReactSketchCanvasRef | null>(null);
   const [isLive, setIsLive] = useState(false);
@@ -46,6 +103,7 @@ const TeacherWhiteboard: React.FC = () => {
 
   // Drawing state
   const [drawingState, setDrawingState] = useState<DrawingState>(DEFAULT_DRAWING_STATE);
+  const [strokeCount, setStrokeCount] = useState(0);
 
   // Dropdown states
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
@@ -74,35 +132,6 @@ const TeacherWhiteboard: React.FC = () => {
     return setupClickOutsideHandler(setOpenDropdown);
   }, []);
 
-  // Override the SVG to apply dotted line effect - this approach uses CSS to style all paths at once
-  useEffect(() => {
-    // Create a style element
-    const styleElement = document.createElement('style');
-    styleElement.id = 'dotted-line-style';
-
-    // We'll use a class on the body to trigger the dotted line effect
-    document.body.setAttribute('data-current-brush', drawingState.brushType);
-
-    // The CSS will target paths only when drawing with dotted line
-    styleElement.textContent = `
-      body[data-current-brush="dotted-line"] #whiteboard-container svg path {
-        stroke-dasharray: var(--stroke-width, 4px) !important;
-      }
-    `;
-
-    // Add to document head if it doesn't exist
-    if (!document.getElementById('dotted-line-style')) {
-      document.head.appendChild(styleElement);
-    }
-
-    // Update CSS variable for stroke width
-    document.documentElement.style.setProperty('--stroke-width', `${drawingState.strokeWidth}px, ${drawingState.strokeWidth}px`);
-
-    return () => {
-      // Style cleanup not needed since the element persists
-    };
-  }, [drawingState.brushType, drawingState.strokeWidth]);
-
   const handleStroke = useCallback(async () => {
     if (isLive && canvasRef.current && socket) {
       try {
@@ -112,6 +141,9 @@ const TeacherWhiteboard: React.FC = () => {
         // Update stroke history for undo/redo
         setStrokeHistory(prevHistory => [...prevHistory, paths]);
         setRedoStack([]);
+
+        // Increment stroke count to trigger the CanvasWrapper effect
+        setStrokeCount(count => count + 1);
 
         if (userId) {
           console.log('Sending whiteboard update');
@@ -209,6 +241,7 @@ const TeacherWhiteboard: React.FC = () => {
       // Reset history
       setStrokeHistory([]);
       setRedoStack([]);
+      setStrokeCount(0);
     }
   };
 
@@ -228,6 +261,7 @@ const TeacherWhiteboard: React.FC = () => {
       // Reset history
       setStrokeHistory([]);
       setRedoStack([]);
+      setStrokeCount(0);
     }
   };
 
@@ -241,6 +275,9 @@ const TeacherWhiteboard: React.FC = () => {
       const lastPath = newHistory.pop();
       setStrokeHistory(newHistory);
       setRedoStack(prev => [...prev, lastPath]);
+
+      // Trigger a refresh of dotted lines
+      setStrokeCount(count => count + 1);
 
       // Send updated canvas state
       const paths = await canvasRef.current.exportPaths();
@@ -265,6 +302,9 @@ const TeacherWhiteboard: React.FC = () => {
       setRedoStack(newRedoStack);
       setStrokeHistory(prev => [...prev, pathToRestore]);
 
+      // Trigger a refresh of dotted lines
+      setStrokeCount(count => count + 1);
+
       // Send updated canvas state
       const paths = await canvasRef.current.exportPaths();
       const userId = localStorage.getItem('userId');
@@ -285,28 +325,6 @@ const TeacherWhiteboard: React.FC = () => {
       case 'circle':
       default:
         return <Circle size={16} />;
-    }
-  };
-
-  // This is a simplified approach that lets the CSS handle the dotted line appearance
-  // Based on the data-current-brush attribute set on the body element
-  const handleBrushChange = (brushType: string) => {
-    handleBrushTypeChange(brushType, setDrawingState, setOpenDropdown);
-
-    // For students, we'll redraw the entire canvas whenever switching back to dotted line
-    if (brushType === 'dotted-line' && isLive) {
-      setTimeout(async () => {
-        const paths = await canvasRef.current?.exportPaths();
-        if (paths && paths.length > 0) {
-          const userId = localStorage.getItem('userId');
-          if (userId && socket) {
-            socket.emit('whiteboardUpdate', {
-              teacherId: userId,
-              whiteboardData: JSON.stringify(paths)
-            });
-          }
-        }
-      }, 50);
     }
   };
 
@@ -510,7 +528,7 @@ const TeacherWhiteboard: React.FC = () => {
                       return (
                         <button
                           key={brush.value}
-                          onClick={() => handleBrushChange(brush.value)}
+                          onClick={() => handleBrushTypeChange(brush.value, setDrawingState, setOpenDropdown)}
                           className={`flex items-center justify-between px-3 py-2 rounded hover:bg-gray-100 ${
                             drawingState.brushType === brush.value ? 'bg-gray-100' : ''
                           }`}
@@ -531,24 +549,29 @@ const TeacherWhiteboard: React.FC = () => {
         )}
 
         <div id="whiteboard-container" className="border rounded-lg overflow-hidden bg-white">
-          <ReactSketchCanvas
-            ref={canvasRef}
+          <CanvasWrapper
+            activeBrush={drawingState.brushType}
             strokeWidth={drawingState.strokeWidth}
-            strokeColor={drawingState.isEraser ? "#FFFFFF" : drawingState.color}
-            canvasColor="white"
-            width={`${canvasSize.width}px`}
-            height={`${canvasSize.height}px`}
-            exportWithBackgroundImage={false}
-            withTimestamp={false}
-            allowOnlyPointerType="all"
-            lineCap="round"
-            style={{
-              opacity: drawingState.opacity,
-            }}
-            className="touch-none"
-            onStroke={handleStroke}
-            onChange={handleStroke}
-          />
+          >
+            <ReactSketchCanvas
+              ref={canvasRef}
+              strokeWidth={drawingState.strokeWidth}
+              strokeColor={drawingState.isEraser ? "#FFFFFF" : drawingState.color}
+              canvasColor="white"
+              width={`${canvasSize.width}px`}
+              height={`${canvasSize.height}px`}
+              exportWithBackgroundImage={false}
+              withTimestamp={false}
+              allowOnlyPointerType="all"
+              lineCap="round"
+              style={{
+                opacity: drawingState.opacity,
+              }}
+              className="touch-none"
+              onStroke={handleStroke}
+              onChange={handleStroke}
+            />
+          </CanvasWrapper>
         </div>
       </div>
 
