@@ -287,15 +287,18 @@ const TeacherWhiteboard: React.FC = () => {
 
   // Handle brush type change
   const handleBrushTypeChange = (type: string) => {
-    const newState = { ...drawingState, brushType: type };
-
     if (type === 'square') {
-      newState.brushType = 'square';
+      setDrawingState({
+        ...drawingState,
+        brushType: 'square',
+        strokeWidth: drawingState.strokeWidth * 1.5 // Make square brush significantly larger
+      });
     } else {
-      newState.brushType = 'round';
+      setDrawingState({
+        ...drawingState,
+        brushType: 'round'
+      });
     }
-
-    setDrawingState(newState);
     setOpenDropdown(null);
   };
 
@@ -574,25 +577,26 @@ const TeacherWhiteboard: React.FC = () => {
         )}
 
         <div id="whiteboard-container" className="border rounded-lg overflow-hidden bg-white">
-        <ReactSketchCanvas
-          ref={canvasRef}
-          strokeWidth={drawingState.strokeWidth}
-          strokeColor={drawingState.isEraser ? "#FFFFFF" : drawingState.color}
-          canvasColor="white"
-          width={`${canvasSize.width}px`}
-          height={`${canvasSize.height}px`}
-          exportWithBackgroundImage={false}
-          withTimestamp={false}
-          allowOnlyPointerType="all"
-          lineCap={drawingState.brushType as "round" | "butt" | "square"}
-          lineJoin={drawingState.brushType === "square" ? "miter" : "round"} // Add this line
-          style={{
-            opacity: drawingState.opacity,
-          }}
-          className="touch-none"
-          onStroke={handleStroke}
-          onChange={handleStroke}
-        />
+          <ReactSketchCanvas
+            ref={canvasRef}
+            strokeWidth={drawingState.strokeWidth}
+            strokeColor={drawingState.isEraser ? "#FFFFFF" : drawingState.color}
+            canvasColor="white"
+            width={`${canvasSize.width}px`}
+            height={`${canvasSize.height}px`}
+            exportWithBackgroundImage={false}
+            withTimestamp={false}
+            allowOnlyPointerType="all"
+            lineCap={drawingState.brushType as "round" | "butt" | "square"}
+            lineJoin={drawingState.brushType === "square" ? "miter" : "round"}
+            preserveBackgroundImageAspectRatio="none" // Try adding this
+            style={{
+              opacity: drawingState.opacity,
+            }}
+            className="touch-none"
+            onStroke={handleStroke}
+            onChange={handleStroke}
+          />
         </div>
       </div>
 
