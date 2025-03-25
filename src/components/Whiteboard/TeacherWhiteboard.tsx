@@ -21,12 +21,6 @@ import {
 
 let socket: TypedSocket | null = null;
 
-interface StrokePath {
-  paths: any[];
-  brushType: string;
-  width: number;
-}
-
 const initializeSocket = () => {
   if (!socket) {
     socket = io(import.meta.env.VITE_API_URL, {
@@ -57,11 +51,8 @@ const TeacherWhiteboard: React.FC = () => {
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
 
   // Custom stroke history for undo/redo
-  const [strokeHistory, setStrokeHistory] = useState<StrokePath[]>([]);
-  const [redoStack, setRedoStack] = useState<StrokePath[]>([]);
-
-  // Store information about dotted lines
-  const [dottedLines, setDottedLines] = useState<{ [key: string]: number }>({});
+  const [strokeHistory, setStrokeHistory] = useState<any[]>([]);
+  const [redoStack, setRedoStack] = useState<any[]>([]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -83,28 +74,34 @@ const TeacherWhiteboard: React.FC = () => {
     return setupClickOutsideHandler(setOpenDropdown);
   }, []);
 
-  // Apply dotted line styles to paths
+  // Override the SVG to apply dotted line effect - this approach uses CSS to style all paths at once
   useEffect(() => {
-    if (Object.keys(dottedLines).length > 0) {
-      // Apply dotted line styles to specific paths
-      setTimeout(() => {
-        const container = document.getElementById('whiteboard-container');
-        if (container) {
-          const svg = container.querySelector('svg');
-          if (svg) {
-            const paths = svg.querySelectorAll('path');
-            paths.forEach((path, index) => {
-              const pathId = path.getAttribute('data-id') || index.toString();
-              if (dottedLines[pathId] !== undefined) {
-                // Apply dotted line style with the stored stroke width
-                path.style.strokeDasharray = `${dottedLines[pathId]}px, ${dottedLines[pathId]}px`;
-              }
-            });
-          }
-        }
-      }, 50); // Small delay to ensure paths are rendered
+    // Create a style element
+    const styleElement = document.createElement('style');
+    styleElement.id = 'dotted-line-style';
+
+    // We'll use a class on the body to trigger the dotted line effect
+    document.body.setAttribute('data-current-brush', drawingState.brushType);
+
+    // The CSS will target paths only when drawing with dotted line
+    styleElement.textContent = `
+      body[data-current-brush="dotted-line"] #whiteboard-container svg path {
+        stroke-dasharray: var(--stroke-width, 4px) !important;
+      }
+    `;
+
+    // Add to document head if it doesn't exist
+    if (!document.getElementById('dotted-line-style')) {
+      document.head.appendChild(styleElement);
     }
-  }, [dottedLines, strokeHistory]);
+
+    // Update CSS variable for stroke width
+    document.documentElement.style.setProperty('--stroke-width', `${drawingState.strokeWidth}px, ${drawingState.strokeWidth}px`);
+
+    return () => {
+      // Style cleanup not needed since the element persists
+    };
+  }, [drawingState.brushType, drawingState.strokeWidth]);
 
   const handleStroke = useCallback(async () => {
     if (isLive && canvasRef.current && socket) {
@@ -112,54 +109,22 @@ const TeacherWhiteboard: React.FC = () => {
         const paths = await canvasRef.current.exportPaths();
         const userId = localStorage.getItem('userId');
 
-        // Store the current path with its brush type
-        const newStroke: StrokePath = {
-          paths: paths,
-          brushType: drawingState.brushType,
-          width: drawingState.strokeWidth
-        };
-
         // Update stroke history for undo/redo
-        setStrokeHistory(prevHistory => [...prevHistory, newStroke]);
+        setStrokeHistory(prevHistory => [...prevHistory, paths]);
         setRedoStack([]);
-
-        // If this is a dotted line, store its information
-        if (drawingState.brushType === 'dotted-line' && !drawingState.isEraser) {
-          // Store the path ID and its stroke width for applying dotted line style
-          const pathId = (paths.length - 1).toString();
-          setDottedLines(prev => ({
-            ...prev,
-            [pathId]: drawingState.strokeWidth
-          }));
-
-          // Apply the style immediately
-          setTimeout(() => {
-            const container = document.getElementById('whiteboard-container');
-            if (container) {
-              const svg = container.querySelector('svg');
-              if (svg) {
-                const lastPath = svg.querySelector('path:last-child');
-                if (lastPath) {
-                  lastPath.style.strokeDasharray = `${drawingState.strokeWidth}px, ${drawingState.strokeWidth}px`;
-                }
-              }
-            }
-          }, 10);
-        }
 
         if (userId) {
           console.log('Sending whiteboard update');
           socket.emit('whiteboardUpdate', {
             teacherId: userId,
-            whiteboardData: JSON.stringify(paths),
-            dottedLines: JSON.stringify(dottedLines)
+            whiteboardData: JSON.stringify(paths)
           });
         }
       } catch (error) {
         console.error('Error handling stroke:', error);
       }
     }
-  }, [isLive, drawingState, dottedLines]);
+  }, [isLive]);
 
   useEffect(() => {
     const socket = initializeSocket();
@@ -221,15 +186,11 @@ const TeacherWhiteboard: React.FC = () => {
       setShowStartModal(false);
       socket.emit('startLive', userId);
 
-      // Reset dotted lines tracking
-      setDottedLines({});
-
       // Send initial canvas state
       const paths = await canvasRef.current.exportPaths();
       socket.emit('whiteboardUpdate', {
         teacherId: userId,
-        whiteboardData: JSON.stringify(paths),
-        dottedLines: JSON.stringify({})
+        whiteboardData: JSON.stringify(paths)
       });
     }
   };
@@ -245,10 +206,9 @@ const TeacherWhiteboard: React.FC = () => {
       if (canvasRef.current) {
         canvasRef.current.clearCanvas();
       }
-      // Reset history and dotted lines
+      // Reset history
       setStrokeHistory([]);
       setRedoStack([]);
-      setDottedLines({});
     }
   };
 
@@ -261,15 +221,13 @@ const TeacherWhiteboard: React.FC = () => {
       if (userId) {
         socket.emit('whiteboardUpdate', {
           teacherId: userId,
-          whiteboardData: JSON.stringify([]),
-          dottedLines: JSON.stringify({})
+          whiteboardData: JSON.stringify([])
         });
       }
 
-      // Reset history and dotted lines
+      // Reset history
       setStrokeHistory([]);
       setRedoStack([]);
-      setDottedLines({});
     }
   };
 
@@ -282,15 +240,7 @@ const TeacherWhiteboard: React.FC = () => {
       const newHistory = [...strokeHistory];
       const lastPath = newHistory.pop();
       setStrokeHistory(newHistory);
-      setRedoStack(prev => [...prev, lastPath!]);
-
-      // Update dotted lines by removing the last one
-      if (lastPath && lastPath.brushType === 'dotted-line') {
-        const newDottedLines = { ...dottedLines };
-        const lastPathId = (lastPath.paths.length - 1).toString();
-        delete newDottedLines[lastPathId];
-        setDottedLines(newDottedLines);
-      }
+      setRedoStack(prev => [...prev, lastPath]);
 
       // Send updated canvas state
       const paths = await canvasRef.current.exportPaths();
@@ -298,8 +248,7 @@ const TeacherWhiteboard: React.FC = () => {
       if (userId && socket) {
         socket.emit('whiteboardUpdate', {
           teacherId: userId,
-          whiteboardData: JSON.stringify(paths),
-          dottedLines: JSON.stringify(dottedLines)
+          whiteboardData: JSON.stringify(paths)
         });
       }
     }
@@ -314,16 +263,7 @@ const TeacherWhiteboard: React.FC = () => {
       const newRedoStack = [...redoStack];
       const pathToRestore = newRedoStack.pop();
       setRedoStack(newRedoStack);
-      setStrokeHistory(prev => [...prev, pathToRestore!]);
-
-      // Restore dotted line if needed
-      if (pathToRestore && pathToRestore.brushType === 'dotted-line') {
-        const pathId = (pathToRestore.paths.length - 1).toString();
-        setDottedLines(prev => ({
-          ...prev,
-          [pathId]: pathToRestore!.width
-        }));
-      }
+      setStrokeHistory(prev => [...prev, pathToRestore]);
 
       // Send updated canvas state
       const paths = await canvasRef.current.exportPaths();
@@ -331,8 +271,7 @@ const TeacherWhiteboard: React.FC = () => {
       if (userId && socket) {
         socket.emit('whiteboardUpdate', {
           teacherId: userId,
-          whiteboardData: JSON.stringify(paths),
-          dottedLines: JSON.stringify(dottedLines)
+          whiteboardData: JSON.stringify(paths)
         });
       }
     }
@@ -349,40 +288,30 @@ const TeacherWhiteboard: React.FC = () => {
     }
   };
 
-  // Create dynamic dotted line style for current drawing
-  const getCurrentDottedLineStyle = () => {
-    if (drawingState.brushType === 'dotted-line' && !drawingState.isEraser) {
-      return `
-        #whiteboard-container svg path:last-child {
-          stroke-dasharray: ${drawingState.strokeWidth}px, ${drawingState.strokeWidth}px !important;
+  // This is a simplified approach that lets the CSS handle the dotted line appearance
+  // Based on the data-current-brush attribute set on the body element
+  const handleBrushChange = (brushType: string) => {
+    handleBrushTypeChange(brushType, setDrawingState, setOpenDropdown);
+
+    // For students, we'll redraw the entire canvas whenever switching back to dotted line
+    if (brushType === 'dotted-line' && isLive) {
+      setTimeout(async () => {
+        const paths = await canvasRef.current?.exportPaths();
+        if (paths && paths.length > 0) {
+          const userId = localStorage.getItem('userId');
+          if (userId && socket) {
+            socket.emit('whiteboardUpdate', {
+              teacherId: userId,
+              whiteboardData: JSON.stringify(paths)
+            });
+          }
         }
-      `;
+      }, 50);
     }
-    return '';
-  };
-
-  // Create styles for all existing dotted lines
-  const getAllDottedLinesStyle = () => {
-    if (Object.keys(dottedLines).length === 0) return '';
-
-    return Object.entries(dottedLines).map(([pathId, width]) => {
-      return `
-        #whiteboard-container svg path[data-id="${pathId}"],
-        #whiteboard-container svg path:nth-child(${parseInt(pathId) + 1}) {
-          stroke-dasharray: ${width}px, ${width}px !important;
-        }
-      `;
-    }).join('\n');
   };
 
   return (
     <>
-      {/* Inject styles for current drawing and existing dotted lines */}
-      <style dangerouslySetInnerHTML={{ __html: `
-        ${getCurrentDottedLineStyle()}
-        ${getAllDottedLinesStyle()}
-      `}} />
-
       <div className="p-4">
         <div className="mb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <h2 className="text-2xl font-bold">Whiteboard</h2>
@@ -581,7 +510,7 @@ const TeacherWhiteboard: React.FC = () => {
                       return (
                         <button
                           key={brush.value}
-                          onClick={() => handleBrushTypeChange(brush.value, setDrawingState, setOpenDropdown)}
+                          onClick={() => handleBrushChange(brush.value)}
                           className={`flex items-center justify-between px-3 py-2 rounded hover:bg-gray-100 ${
                             drawingState.brushType === brush.value ? 'bg-gray-100' : ''
                           }`}
