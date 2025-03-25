@@ -5,7 +5,7 @@ import { WhiteboardUpdate, TeacherStatus, SessionEndedData } from '../../types/s
 import { StrokeRecorder } from '../../lib/strokeRecorder';
 import { AudioRecorder } from '../../lib/audioRecorder';
 import { uploadSessionRecording } from '../../lib/cloudinary';
-import { Loader2, AlertCircle } from 'lucide-react';
+import { Loader2, AlertCircle, Mic } from 'lucide-react';
 
 let socket: Socket | null = null;
 
@@ -34,6 +34,7 @@ const StudentWhiteboard: React.FC = () => {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [hasSessionAudio, setHasSessionAudio] = useState(false);
   const [sessionSaved, setSessionSaved] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
 
   const handleWhiteboardUpdate = useCallback(async (data: WhiteboardUpdate) => {
     if (!canvasRef.current) return;
@@ -75,7 +76,7 @@ const StudentWhiteboard: React.FC = () => {
       const videoBlob = await recorder.recordStrokes(paths);
       let videoUrl;
 
-      // The rest of the function remains the same
+      // If audio is available, try to merge it with the video
       if (hasSessionAudio) {
         try {
           // Get audio blob from the server
@@ -172,6 +173,8 @@ const StudentWhiteboard: React.FC = () => {
     };
 
     const handleTeacherOffline = async (data: TeacherStatus) => {
+      console.log('Teacher offline event received:', data.teacherId, 'Current:', currentTeacherId);
+
       // Only save if this is the teacher we're currently viewing
       // and we have some whiteboard data
       if (currentTeacherId === data.teacherId &&
@@ -180,11 +183,22 @@ const StudentWhiteboard: React.FC = () => {
         await saveSession();
       }
 
-      setIsTeacherLive(false);
-      setCurrentTeacherId(null);
-      sessionStartTimeRef.current = null;
-      if (canvasRef.current) {
-        canvasRef.current.clearCanvas();
+      // Only clear the UI if we're currently viewing this teacher
+      if (currentTeacherId === data.teacherId) {
+        setIsTeacherLive(false);
+        setCurrentTeacherId(null);
+        sessionStartTimeRef.current = null;
+        if (canvasRef.current) {
+          canvasRef.current.clearCanvas();
+        }
+      }
+    };
+
+    // Add new handler for audio toggle
+    const handleAudioToggle = (data: { teacherId: string, enabled: boolean }) => {
+      if (currentTeacherId === data.teacherId) {
+        setIsRecording(data.enabled);
+        console.log('Teacher audio recording status changed:', data.enabled);
       }
     };
 
@@ -217,6 +231,7 @@ const StudentWhiteboard: React.FC = () => {
     socket.on('teacherOffline', handleTeacherOffline);
     socket.on('sessionEnded', handleSessionEnded);
     socket.on('audioAvailable', handleAudioAvailable);
+    socket.on('audioToggle', handleAudioToggle); // Add the new handler
     socket.on('connect', handleConnect);
     socket.on('connect_error', handleConnectError);
     socket.on('disconnect', handleDisconnect);
@@ -229,6 +244,7 @@ const StudentWhiteboard: React.FC = () => {
       socket.off('teacherOffline', handleTeacherOffline);
       socket.off('sessionEnded', handleSessionEnded);
       socket.off('audioAvailable', handleAudioAvailable);
+      socket.off('audioToggle', handleAudioToggle);
       socket.off('connect', handleConnect);
       socket.off('connect_error', handleConnectError);
       socket.off('disconnect', handleDisconnect);
@@ -281,6 +297,14 @@ const StudentWhiteboard: React.FC = () => {
           <h2 className="text-2xl font-bold">Live Whiteboard Session</h2>
           <p className="text-sm text-gray-600 mt-1">Session in progress</p>
         </div>
+
+        {isRecording && (
+          <div className="mb-4 p-2 bg-blue-50 border border-blue-200 rounded-lg flex items-center gap-2 text-blue-700">
+            <Mic size={20} className="animate-pulse" />
+            <p>Teacher's microphone is active</p>
+          </div>
+        )}
+
         <div id="student-whiteboard-container" className="border rounded-lg overflow-hidden bg-white">
           <ReactSketchCanvas
             ref={canvasRef}

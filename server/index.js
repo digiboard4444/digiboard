@@ -101,6 +101,16 @@ io.on('connection', (socket) => {
     }
   });
 
+  // NEW HANDLER: Handle audio toggle events from teacher
+  socket.on('toggleAudio', (data) => {
+    console.log('Teacher toggled audio:', data.teacherId, data.enabled);
+    // Broadcast to students that the teacher has toggled audio
+    socket.broadcast.to(`teacher-${data.teacherId}`).emit('audioToggle', {
+      teacherId: data.teacherId,
+      enabled: data.enabled
+    });
+  });
+
   // Handle audio data from teacher
   socket.on('audioData', (data) => {
     console.log('Audio data received from teacher:', data.teacherId);
@@ -174,7 +184,7 @@ io.on('connection', (socket) => {
   });
 });
 
-// Add direct route for audio access
+// Improved audio data route to handle potential errors more gracefully
 app.get('/api/audio/:teacherId', async (req, res) => {
   try {
     const { teacherId } = req.params;
@@ -187,16 +197,26 @@ app.get('/api/audio/:teacherId', async (req, res) => {
     // Get the audio data
     const audioData = audioDataMap.get(teacherId);
 
-    // Create buffer from base64 data
-    const base64Data = audioData.split(',')[1]; // Remove the data URL prefix
-    const buffer = Buffer.from(base64Data, 'base64');
+    // Check if the data is in the expected format
+    if (!audioData || !audioData.includes(',')) {
+      return res.status(400).json({ message: 'Invalid audio data format' });
+    }
 
-    // Set response headers
-    res.setHeader('Content-Type', 'audio/webm');
-    res.setHeader('Content-Disposition', `attachment; filename="session-${teacherId}-audio.webm"`);
+    try {
+      // Create buffer from base64 data
+      const base64Data = audioData.split(',')[1]; // Remove the data URL prefix
+      const buffer = Buffer.from(base64Data, 'base64');
 
-    // Send the audio file
-    res.send(buffer);
+      // Set response headers
+      res.setHeader('Content-Type', 'audio/webm');
+      res.setHeader('Content-Disposition', `attachment; filename="session-${teacherId}-audio.webm"`);
+
+      // Send the audio file
+      res.send(buffer);
+    } catch (error) {
+      console.error('Error processing audio data:', error);
+      res.status(500).json({ message: 'Error processing audio data', error: error.message });
+    }
   } catch (error) {
     console.error('Error retrieving audio data:', error);
     res.status(500).json({ message: 'Server error', error: error.message });

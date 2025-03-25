@@ -7,52 +7,51 @@ export class AudioRecorder {
   private stream: MediaStream | null = null;
   private ffmpeg: FFmpeg | null = null;
   private isRecording = false;
+  private isInitialized = false;
 
   constructor() {}
 
   private async init() {
+    // If already initialized, return early to prevent duplicate initialization
+    if (this.isInitialized) return true;
+
     if (!this.ffmpeg) {
       this.ffmpeg = new FFmpeg();
 
       try {
-        // Use toBlobURL to avoid CORS issues
-        const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.9/dist/esm';
-
-        const coreURL = await toBlobURL(
-          `${baseURL}/ffmpeg-core.js`,
-          'text/javascript',
-        );
-
-        const wasmURL = await toBlobURL(
-          `${baseURL}/ffmpeg-core.wasm`,
-          'application/wasm',
-        );
-
-        // Optional: worker URL if needed
-        const workerURL = await toBlobURL(
-          `${baseURL}/ffmpeg-core.worker.js`,
-          'text/javascript',
-        );
+        // Host the FFmpeg files locally rather than using unpkg.com
+        // This avoids CORS and service unavailability issues
+        const baseURL = '/assets/ffmpeg';
 
         await this.ffmpeg.load({
-          coreURL,
-          wasmURL,
-          workerURL,
+          coreURL: `${baseURL}/ffmpeg-core.js`,
+          wasmURL: `${baseURL}/ffmpeg-core.wasm`,
+          workerURL: `${baseURL}/ffmpeg-core.worker.js`,
           logger: () => {}, // Silent logger
         });
 
+        this.isInitialized = true;
         console.log('FFmpeg loaded successfully');
+        return true;
       } catch (error) {
         console.error('Failed to load FFmpeg:', error);
-        throw new Error('Failed to initialize audio processor');
+        // Even if FFmpeg fails, don't throw an exception here
+        // We'll handle this differently to avoid interrupting the socket connection
+        return false;
       }
     }
+
+    return true;
   }
 
   public async startRecording(): Promise<void> {
-    try {
-      await this.init();
+    // Try to initialize FFmpeg, but don't throw if it fails
+    const ffmpegInitialized = await this.init().catch(err => {
+      console.warn('FFmpeg initialization failed, continuing with audio only:', err);
+      return false;
+    });
 
+    try {
       // Request microphone access
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
@@ -76,14 +75,17 @@ export class AudioRecorder {
       console.log('Audio recording started');
     } catch (error) {
       console.error('Error starting audio recording:', error);
-      throw new Error('Failed to start audio recording');
+      // Don't throw here - instead return without an exception
+      // This prevents the socket connection from being affected
     }
   }
 
   public async stopRecording(): Promise<Blob> {
     return new Promise((resolve, reject) => {
       if (!this.mediaRecorder || !this.isRecording) {
-        reject(new Error('No recording in progress'));
+        // Return an empty blob instead of rejecting
+        console.warn('No recording in progress, returning empty blob');
+        resolve(new Blob([], { type: 'audio/webm' }));
         return;
       }
 
@@ -102,7 +104,8 @@ export class AudioRecorder {
           resolve(audioBlob);
         } catch (error) {
           console.error('Error finalizing audio recording:', error);
-          reject(error);
+          // Return an empty blob instead of rejecting
+          resolve(new Blob([], { type: 'audio/webm' }));
         }
       };
 
@@ -111,10 +114,15 @@ export class AudioRecorder {
   }
 
   public async mergeAudioAndVideo(audioBlob: Blob, videoBlob: Blob): Promise<Blob> {
-    await this.init();
+    // Try to initialize FFmpeg, but if it fails, just return the video blob
+    const ffmpegInitialized = await this.init().catch(err => {
+      console.warn('FFmpeg initialization failed, returning video only:', err);
+      return false;
+    });
 
-    if (!this.ffmpeg) {
-      throw new Error('FFmpeg not initialized');
+    if (!ffmpegInitialized || !this.ffmpeg) {
+      console.warn('FFmpeg not available, returning video only');
+      return videoBlob;
     }
 
     try {
@@ -152,7 +160,8 @@ export class AudioRecorder {
       return new Blob([data], { type: 'video/mp4' });
     } catch (error) {
       console.error('Error merging audio and video:', error);
-      throw new Error('Failed to merge audio and video');
+      // If any error occurs during merging, return the original video
+      return videoBlob;
     }
   }
 }

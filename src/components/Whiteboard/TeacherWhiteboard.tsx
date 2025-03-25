@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
-import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown, Square, Triangle, Mic, MicOff } from 'lucide-react';
+import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown, Square, Triangle } from 'lucide-react';
 import { io } from 'socket.io-client';
 import type { TypedSocket } from '../../types/socket';
 import { AudioRecorder } from '../../lib/audioRecorder';
@@ -137,7 +137,6 @@ const TeacherWhiteboard: React.FC = () => {
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
   const [error, setError] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
-  const [isAudioEnabled, setIsAudioEnabled] = useState(true);
   const [isAudioRecording, setIsAudioRecording] = useState(false);
 
   // Drawing state
@@ -238,26 +237,31 @@ const TeacherWhiteboard: React.FC = () => {
     }
   }, [drawingState]);
 
-  // Start audio recording
-  const startAudioRecording = async () => {
+  // Start audio recording - Non-blocking implementation
+  const startAudioRecording = () => {
     if (!audioRecorderRef.current) {
       audioRecorderRef.current = new AudioRecorder();
     }
 
-    try {
-      await audioRecorderRef.current.startRecording();
-      setIsAudioRecording(true);
-      console.log('Started audio recording');
-    } catch (error) {
-      console.error('Error starting audio recording:', error);
-      setError('Failed to access microphone. Please check permissions and try again.');
-      setIsAudioEnabled(false);
-    }
+    console.log('Initializing audio recording...');
+
+    // Use a non-blocking approach
+    setTimeout(() => {
+      audioRecorderRef.current?.startRecording()
+        .then(() => {
+          setIsAudioRecording(true);
+          console.log('Audio recording started successfully');
+        })
+        .catch((err) => {
+          console.error('Error in audio recording:', err);
+          setError('Microphone access issue. The session will continue.');
+        });
+    }, 0);
   };
 
   // Stop audio recording and get the blob
   const stopAudioRecording = async (): Promise<Blob | null> => {
-    if (!audioRecorderRef.current || !isAudioRecording) {
+    if (!audioRecorderRef.current) {
       return null;
     }
 
@@ -268,24 +272,10 @@ const TeacherWhiteboard: React.FC = () => {
       return audioBlob;
     } catch (error) {
       console.error('Error stopping audio recording:', error);
-      setError('Failed to stop audio recording.');
+      setError('Failed to stop audio recording, but the session will still be saved.');
+      setIsAudioRecording(false);
       return null;
     }
-  };
-
-  // Toggle audio recording state
-  const toggleAudio = () => {
-    if (!isLive) return;
-
-    if (isAudioEnabled && !isAudioRecording) {
-      // If we're turning on audio while already live, start recording
-      startAudioRecording().catch(console.error);
-    } else if (isAudioRecording) {
-      // If we're turning off audio while recording, stop recording
-      stopAudioRecording().catch(console.error);
-    }
-
-    setIsAudioEnabled(prev => !prev);
   };
 
   useEffect(() => {
@@ -363,12 +353,13 @@ const TeacherWhiteboard: React.FC = () => {
     if (userId && canvasRef.current) {
       setIsLive(true);
       setShowStartModal(false);
+
+      // Start live session
       socket.emit('startLive', userId);
 
-      // Start audio recording if enabled
-      if (isAudioEnabled) {
-        await startAudioRecording();
-      }
+      // Always start audio recording automatically when session starts
+      // No user control for audio - it records the entire session
+      startAudioRecording();
 
       // Send initial canvas state
       const paths = await canvasRef.current.exportPaths();
@@ -384,14 +375,19 @@ const TeacherWhiteboard: React.FC = () => {
     const socket = initializeSocket();
 
     if (userId) {
-      // Stop audio recording if active
+      // Always attempt to stop audio recording when session ends
       let audioBlob = null;
       if (isAudioRecording) {
-        audioBlob = await stopAudioRecording();
+        try {
+          audioBlob = await stopAudioRecording();
+        } catch (error) {
+          console.error('Error stopping recording:', error);
+          // Continue without audio
+        }
       }
 
-      // If audio was recorded, send it
-      if (audioBlob) {
+      // If audio was recorded, send it to server
+      if (audioBlob && audioBlob.size > 0) {
         try {
           // Convert to base64 for transmission
           const reader = new FileReader();
@@ -400,7 +396,7 @@ const TeacherWhiteboard: React.FC = () => {
           reader.onloadend = () => {
             const base64data = reader.result as string;
 
-            // Send audio data to server
+            // Send audio data to server first
             socket.emit('audioData', {
               teacherId: userId,
               audioData: base64data
@@ -412,7 +408,7 @@ const TeacherWhiteboard: React.FC = () => {
               hasAudio: true
             });
 
-            // Then stop the live session
+            // Finally stop the live session
             socket.emit('stopLive', userId);
           };
         } catch (error) {
@@ -425,7 +421,7 @@ const TeacherWhiteboard: React.FC = () => {
           socket.emit('stopLive', userId);
         }
       } else {
-        // No audio, just stop the session
+        // No audio blob available, just end the session
         socket.emit('sessionEnded', {
           teacherId: userId,
           hasAudio: false
@@ -433,8 +429,10 @@ const TeacherWhiteboard: React.FC = () => {
         socket.emit('stopLive', userId);
       }
 
+      // Clear all local states
       setIsLive(false);
       setShowStopModal(false);
+      setIsAudioRecording(false);
 
       if (canvasRef.current) {
         canvasRef.current.clearCanvas();
@@ -603,17 +601,6 @@ const TeacherWhiteboard: React.FC = () => {
                   <Eraser size={20} /> Eraser
                 </button>
                 <button
-                  onClick={toggleAudio}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-md ${
-                    isAudioEnabled
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-200 text-gray-800 hover:bg-gray-300'
-                  }`}
-                  title={isAudioEnabled ? "Microphone On" : "Microphone Off"}
-                >
-                  {isAudioEnabled ? <Mic size={20} /> : <MicOff size={20} />}
-                </button>
-                <button
                   onClick={handleUndo}
                   disabled={strokeHistory.length === 0}
                   className={`flex items-center gap-2 px-4 py-2 rounded-md ${
@@ -672,8 +659,8 @@ const TeacherWhiteboard: React.FC = () => {
         {/* Audio Recording Indicator */}
         {isAudioRecording && (
           <div className="mb-4 p-2 bg-blue-50 border border-blue-200 rounded-lg flex items-center gap-2 text-blue-700">
-            <Mic size={20} className="animate-pulse" />
-            <p>Microphone active - your voice is being recorded</p>
+            <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse mr-2"></div>
+            <p>Live session recording in progress (audio + whiteboard)</p>
           </div>
         )}
 
@@ -848,18 +835,9 @@ const TeacherWhiteboard: React.FC = () => {
             <p className="text-gray-600 mb-6">
               Are you sure you want to start a live whiteboard session? Students will be able to join and view your whiteboard.
             </p>
-            <div className="flex items-center mb-4">
-              <input
-                type="checkbox"
-                id="enable-audio"
-                checked={isAudioEnabled}
-                onChange={() => setIsAudioEnabled(prev => !prev)}
-                className="mr-2"
-              />
-              <label htmlFor="enable-audio" className="text-sm">
-                Enable microphone recording (students will be able to hear your voice in saved recordings)
-              </label>
-            </div>
+            <p className="text-gray-800 mb-6 p-3 bg-blue-50 border border-blue-200 rounded">
+              <strong>Note:</strong> Your microphone will be automatically recorded during the entire session to provide audio for students.
+            </p>
             <div className="flex flex-col sm:flex-row justify-end gap-3">
               <button
                 onClick={() => setShowStartModal(false)}
