@@ -2,7 +2,7 @@ import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { WhiteboardUpdate, TeacherStatus } from '../../types/socket';
 import { Loader2, AlertCircle } from 'lucide-react';
-import { uploadSessionRecording as cloudinaryUpload } from '../../utils/cloudinary';
+import { uploadSessionRecording as cloudinaryUpload } from '../../lib/cloudinary';
 
 let socket: Socket | null = null;
 
