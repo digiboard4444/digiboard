@@ -30,7 +30,7 @@ export const OPACITY_OPTIONS = [
 ];
 
 export const BRUSH_TYPES = [
-  { name: 'Circle', value: 'circle', icon: 'Circle', description: 'Round brush tip' },
+  { name: 'Circle', value: 'circle', icon: 'Circle', description: 'Solid brush tip' },
   { name: 'Dotted Line', value: 'dotted-line', icon: 'MinusIcon', description: 'Alternating color/white' },
 ];
 
@@ -51,93 +51,92 @@ export const DEFAULT_DRAWING_STATE: DrawingState = {
   isEraser: false,
 };
 
-// Function to handle color change
 export const handleColorChange = (
-  color: string,
-  setDrawingState: React.Dispatch<React.SetStateAction<DrawingState>>,
-  setOpenDropdown: React.Dispatch<React.SetStateAction<string | null>>
-) => {
-  setDrawingState(prev => ({
-    ...prev,
-    color,
-    isEraser: false
-  }));
-  setOpenDropdown(null);
-};
-
-// Function to handle stroke size change
-export const handleSizeChange = (
-  size: number,
-  setDrawingState: React.Dispatch<React.SetStateAction<DrawingState>>,
-  setOpenDropdown: React.Dispatch<React.SetStateAction<string | null>>
-) => {
-  setDrawingState(prev => ({
-    ...prev,
-    strokeWidth: size
-  }));
-  setOpenDropdown(null);
-};
-
-// Function to handle opacity change
-export const handleOpacityChange = (
-  opacity: number,
-  setDrawingState: React.Dispatch<React.SetStateAction<DrawingState>>,
-  setOpenDropdown: React.Dispatch<React.SetStateAction<string | null>>
-) => {
-  setDrawingState(prev => ({
-    ...prev,
-    opacity
-  }));
-  setOpenDropdown(null);
-};
-
-// Function to handle brush type change
-export const handleBrushTypeChange = (
-  type: string,
-  setDrawingState: React.Dispatch<React.SetStateAction<DrawingState>>,
-  setOpenDropdown: React.Dispatch<React.SetStateAction<string | null>>
-) => {
-  setDrawingState(prev => ({
-    ...prev,
-    brushType: type,
-    isEraser: false
-  }));
-  setOpenDropdown(null);
-};
-
-// Function to toggle eraser
-export const toggleEraser = (
-  setDrawingState: React.Dispatch<React.SetStateAction<DrawingState>>
-) => {
-  setDrawingState(prev => ({
-    ...prev,
-    isEraser: !prev.isEraser
-  }));
-};
-
-// Function to toggle dropdown
-export const toggleDropdown = (
-  menu: string,
-  openDropdown: string | null,
-  setOpenDropdown: React.Dispatch<React.SetStateAction<string | null>>
-) => {
-  if (openDropdown === menu) {
-    setOpenDropdown(null);
-  } else {
-    setOpenDropdown(menu);
-  }
-};
-
-// Helper to setup the close dropdown when clicking outside handler
-export const setupClickOutsideHandler = (
-  setOpenDropdown: React.Dispatch<React.SetStateAction<string | null>>
-) => {
-  const handleClickOutside = () => {
+    color: string,
+    setDrawingState: React.Dispatch<React.SetStateAction<DrawingState>>,
+    setOpenDropdown: React.Dispatch<React.SetStateAction<string | null>>
+  ) => {
+    setDrawingState(prev => ({
+      ...prev,
+      color,
+      isEraser: false
+    }));
     setOpenDropdown(null);
   };
 
-  document.addEventListener('click', handleClickOutside);
-  return () => {
-    document.removeEventListener('click', handleClickOutside);
+  // Function to handle stroke size change
+  export const handleSizeChange = (
+    size: number,
+    setDrawingState: React.Dispatch<React.SetStateAction<DrawingState>>,
+    setOpenDropdown: React.Dispatch<React.SetStateAction<string | null>>
+  ) => {
+    setDrawingState(prev => ({
+      ...prev,
+      strokeWidth: size
+    }));
+    setOpenDropdown(null);
   };
-};
+
+  // Function to handle opacity change
+  export const handleOpacityChange = (
+    opacity: number,
+    setDrawingState: React.Dispatch<React.SetStateAction<DrawingState>>,
+    setOpenDropdown: React.Dispatch<React.SetStateAction<string | null>>
+  ) => {
+    setDrawingState(prev => ({
+      ...prev,
+      opacity
+    }));
+    setOpenDropdown(null);
+  };
+
+  // Function to handle brush type change
+  export const handleBrushTypeChange = (
+    type: string,
+    setDrawingState: React.Dispatch<React.SetStateAction<DrawingState>>,
+    setOpenDropdown: React.Dispatch<React.SetStateAction<string | null>>
+  ) => {
+    setDrawingState(prev => ({
+      ...prev,
+      brushType: type,
+      isEraser: false
+    }));
+    setOpenDropdown(null);
+  };
+
+  // Function to toggle eraser
+  export const toggleEraser = (
+    setDrawingState: React.Dispatch<React.SetStateAction<DrawingState>>
+  ) => {
+    setDrawingState(prev => ({
+      ...prev,
+      isEraser: !prev.isEraser
+    }));
+  };
+
+  // Function to toggle dropdown
+  export const toggleDropdown = (
+    menu: string,
+    openDropdown: string | null,
+    setOpenDropdown: React.Dispatch<React.SetStateAction<string | null>>
+  ) => {
+    if (openDropdown === menu) {
+      setOpenDropdown(null);
+    } else {
+      setOpenDropdown(menu);
+    }
+  };
+
+  // Helper to setup the close dropdown when clicking outside handler
+  export const setupClickOutsideHandler = (
+    setOpenDropdown: React.Dispatch<React.SetStateAction<string | null>>
+  ) => {
+    const handleClickOutside = () => {
+      setOpenDropdown(null);
+    };
+
+    document.addEventListener('click', handleClickOutside);
+    return () => {
+      document.removeEventListener('click', handleClickOutside);
+    };
+  };
