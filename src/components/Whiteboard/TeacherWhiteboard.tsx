@@ -49,15 +49,11 @@ const OPACITY_OPTIONS = [
   { name: '100%', value: 1.0 },
 ];
 
-// ReactSketchCanvas only supports 'round', 'butt', and 'square' line caps
-// For other effects, we'll need a custom solution later
+// Modified brush types - Circle and Dotted Circle
 const BRUSH_TYPES = [
-  { name: 'Round', value: 'round', description: 'Round brush tip' },
-  { name: 'Square', value: 'square', description: 'Square brush tip' },
+  { name: 'Circle', value: 'round', description: 'Solid circle brush' },
+  { name: 'Dotted Circle', value: 'dotted', description: 'Dotted circle brush' },
 ];
-
-// ReactSketchCanvas only supports basic line styles
-// More advanced brush styles would require custom canvas implementations
 
 interface DrawingState {
   color: string;
@@ -67,8 +63,315 @@ interface DrawingState {
   isEraser: boolean;
 }
 
+// This is our custom canvas component that supports dotted brush
+const CustomCanvas = React.forwardRef((props: any, ref: any) => {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [lastPoint, setLastPoint] = useState<{x: number, y: number} | null>(null);
+  const [paths, setPaths] = useState<any[]>([]);
+  const [redoStack, setRedoStack] = useState<any[]>([]);
+
+  // Initialize the canvas
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = props.strokeWidth || 6;
+        ctx.strokeStyle = props.strokeColor || '#000000';
+        ctx.globalAlpha = props.opacity || 1.0;
+      }
+    }
+  }, [props.strokeWidth, props.strokeColor, props.opacity]);
+
+  // Clear the canvas
+  const clearCanvas = () => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        setPaths([]);
+        setRedoStack([]);
+      }
+    }
+  };
+
+  // Draw a circle at position
+  const drawCircle = (ctx: CanvasRenderingContext2D, x: number, y: number, size: number, color: string) => {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, size/2, 0, Math.PI * 2);
+    ctx.fill();
+  };
+
+  // Draw a dotted circle at position
+  const drawDottedCircle = (ctx: CanvasRenderingContext2D, x: number, y: number, size: number, color: string) => {
+    const radius = size / 2;
+    const dotCount = Math.max(8, Math.floor(radius * 2)); // Number of dots scales with size
+    const dotSize = Math.max(1, size / 8); // Dot size scales with brush size
+
+    ctx.fillStyle = color;
+
+    // Draw dots in a circle pattern
+    for (let i = 0; i < dotCount; i++) {
+      const angle = (i / dotCount) * Math.PI * 2;
+      const dotX = x + Math.cos(angle) * radius;
+      const dotY = y + Math.sin(angle) * radius;
+
+      ctx.beginPath();
+      ctx.arc(dotX, dotY, dotSize, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Draw a dot in the center
+    ctx.beginPath();
+    ctx.arc(x, y, dotSize, 0, Math.PI * 2);
+    ctx.fill();
+  };
+
+  // Handle start drawing
+  const handleMouseDown = (e: any) => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      setIsDrawing(true);
+      setLastPoint({ x, y });
+
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        // Set drawing styles
+        ctx.lineWidth = props.strokeWidth || 6;
+        ctx.strokeStyle = props.strokeColor || '#000000';
+        ctx.globalAlpha = props.opacity || 1.0;
+
+        const color = props.isEraser ? "#FFFFFF" : props.strokeColor;
+
+        // For dotted brush, draw a dotted circle at the starting point
+        if (props.brushType === 'dotted') {
+          drawDottedCircle(ctx, x, y, props.strokeWidth, color);
+        } else {
+          // For regular brush, draw a circle or start a line
+          if (props.strokeWidth > 4) {
+            drawCircle(ctx, x, y, props.strokeWidth, color);
+          } else {
+            ctx.beginPath();
+            ctx.arc(x, y, props.strokeWidth / 2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+
+        // Add current path to paths for undo/redo
+        setPaths([...paths, {
+          points: [{ x, y }],
+          brushType: props.brushType,
+          strokeWidth: props.strokeWidth,
+          strokeColor: props.strokeColor,
+          isEraser: props.isEraser
+        }]);
+
+        // Clear redo stack after a new drawing
+        setRedoStack([]);
+      }
+    }
+  };
+
+  // Handle drawing
+  const handleMouseMove = (e: any) => {
+    if (!isDrawing) return;
+
+    const canvas = canvasRef.current;
+    if (canvas && lastPoint) {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        const color = props.isEraser ? "#FFFFFF" : props.strokeColor;
+
+        if (props.brushType === 'dotted') {
+          // For dotted brush, draw dotted circles along the path
+          const dx = Math.abs(x - lastPoint.x);
+          const dy = Math.abs(y - lastPoint.y);
+          const distance = Math.sqrt(dx * dx + dy * dy);
+
+          // Determine spacing between dots
+          const dotSpacing = props.strokeWidth * 0.8;
+
+          // If points are far apart, draw intermediate dotted circles
+          if (distance > dotSpacing) {
+            const steps = Math.floor(distance / dotSpacing);
+            for (let i = 1; i <= steps; i++) {
+              const ratio = i / (steps + 1);
+              const intermediateX = lastPoint.x + (x - lastPoint.x) * ratio;
+              const intermediateY = lastPoint.y + (y - lastPoint.y) * ratio;
+              drawDottedCircle(ctx, intermediateX, intermediateY, props.strokeWidth, color);
+            }
+          }
+
+          // Draw dotted circle at current point
+          drawDottedCircle(ctx, x, y, props.strokeWidth, color);
+        } else {
+          // For round brush, draw normal line
+          ctx.beginPath();
+          ctx.moveTo(lastPoint.x, lastPoint.y);
+          ctx.lineTo(x, y);
+          ctx.stroke();
+        }
+
+        // Update last point
+        setLastPoint({ x, y });
+
+        // Update current path
+        setPaths(prevPaths => {
+          const newPaths = [...prevPaths];
+          const currentPath = {...newPaths[newPaths.length - 1]};
+          currentPath.points = [...currentPath.points, { x, y }];
+          return [...newPaths.slice(0, -1), currentPath];
+        });
+      }
+    }
+  };
+
+  // Handle end drawing
+  const handleMouseUp = () => {
+    setIsDrawing(false);
+    if (props.onStroke) {
+      props.onStroke(paths);
+    }
+  };
+
+  // Export paths for saving and undo/redo
+  const exportPaths = () => {
+    return paths;
+  };
+
+  // Handle undo
+  const undo = () => {
+    if (paths.length > 0) {
+      const newPaths = [...paths];
+      const removedPath = newPaths.pop();
+      setPaths(newPaths);
+      setRedoStack(prevRedoStack => [...prevRedoStack, removedPath]);
+
+      // Redraw everything
+      redrawCanvas(newPaths);
+
+      if (props.onStroke) {
+        props.onStroke(newPaths);
+      }
+    }
+  };
+
+  // Handle redo
+  const redo = () => {
+    if (redoStack.length > 0) {
+      const newRedoStack = [...redoStack];
+      const pathToRestore = newRedoStack.pop();
+      setPaths(prevPaths => [...prevPaths, pathToRestore]);
+      setRedoStack(newRedoStack);
+
+      // Redraw everything
+      redrawCanvas([...paths, pathToRestore]);
+
+      if (props.onStroke) {
+        props.onStroke([...paths, pathToRestore]);
+      }
+    }
+  };
+
+  // Redraw the entire canvas from paths
+  const redrawCanvas = (pathsToRender: any[]) => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        pathsToRender.forEach(path => {
+          ctx.lineWidth = path.strokeWidth;
+          ctx.strokeStyle = path.isEraser ? "#FFFFFF" : path.strokeColor;
+          ctx.globalAlpha = props.opacity || 1.0;
+
+          if (path.brushType === 'dotted') {
+            // Redraw dotted path
+            path.points.forEach((point: {x: number, y: number}, index: number) => {
+              drawDottedCircle(ctx, point.x, point.y, path.strokeWidth, path.isEraser ? "#FFFFFF" : path.strokeColor);
+            });
+          } else {
+            // Redraw regular path
+            if (path.points.length > 1) {
+              ctx.beginPath();
+              ctx.moveTo(path.points[0].x, path.points[0].y);
+              for (let i = 1; i < path.points.length; i++) {
+                ctx.lineTo(path.points[i].x, path.points[i].y);
+              }
+              ctx.stroke();
+            } else if (path.points.length === 1) {
+              // Draw a single point
+              const point = path.points[0];
+              drawCircle(ctx, point.x, point.y, path.strokeWidth, path.isEraser ? "#FFFFFF" : path.strokeColor);
+            }
+          }
+        });
+      }
+    }
+  };
+
+  // Expose methods via ref
+  React.useImperativeHandle(ref, () => ({
+    clearCanvas,
+    exportPaths,
+    undo,
+    redo,
+    getPaths: () => paths
+  }));
+
+  return (
+    <canvas
+      ref={canvasRef}
+      width={props.width}
+      height={props.height}
+      style={{
+        ...props.style,
+        touchAction: 'none'
+      }}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+      onTouchStart={(e) => {
+        e.preventDefault();
+        const touch = e.touches[0];
+        handleMouseDown({ clientX: touch.clientX, clientY: touch.clientY });
+      }}
+      onTouchMove={(e) => {
+        e.preventDefault();
+        const touch = e.touches[0];
+        handleMouseMove({ clientX: touch.clientX, clientY: touch.clientY });
+      }}
+      onTouchEnd={handleMouseUp}
+    />
+  );
+});
+
+// Interface for CustomCanvasRef
+interface CustomCanvasRef {
+  clearCanvas: () => void;
+  exportPaths: () => any[];
+  undo: () => void;
+  redo: () => void;
+  getPaths: () => any[];
+}
+
 const TeacherWhiteboard: React.FC = () => {
-  const canvasRef = useRef<ReactSketchCanvasRef | null>(null);
+  const canvasRef = useRef<CustomCanvasRef | null>(null);
 
   const [isLive, setIsLive] = useState(false);
   const [showStartModal, setShowStartModal] = useState(false);
@@ -108,15 +411,13 @@ const TeacherWhiteboard: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  const handleStroke = useCallback(async () => {
+  const handleStroke = useCallback(async (paths: any) => {
     if (isLive && canvasRef.current && socket) {
       try {
-        const paths = await canvasRef.current.exportPaths();
         const userId = localStorage.getItem('userId');
 
         // Update stroke history for undo/redo
-        setStrokeHistory(prevHistory => [...prevHistory, paths]);
-        setRedoStack([]);
+        setStrokeHistory(paths);
 
         if (userId) {
           console.log('Sending whiteboard update');
@@ -140,7 +441,10 @@ const TeacherWhiteboard: React.FC = () => {
       setIsConnecting(false);
       if (isLive && userId) {
         socket.emit('startLive', userId);
-        handleStroke(); // Send current canvas state
+        if (canvasRef.current) {
+          const paths = canvasRef.current.getPaths();
+          handleStroke(paths); // Send current canvas state
+        }
       }
     };
 
@@ -192,7 +496,7 @@ const TeacherWhiteboard: React.FC = () => {
       socket.emit('startLive', userId);
 
       // Send initial canvas state
-      const paths = await canvasRef.current.exportPaths();
+      const paths = canvasRef.current.getPaths();
       socket.emit('whiteboardUpdate', {
         teacherId: userId,
         whiteboardData: JSON.stringify(paths)
@@ -219,7 +523,7 @@ const TeacherWhiteboard: React.FC = () => {
 
   const handleClearCanvas = async () => {
     if (canvasRef.current && isLive) {
-      await canvasRef.current.clearCanvas();
+      canvasRef.current.clearCanvas();
       const userId = localStorage.getItem('userId');
       const socket = initializeSocket();
 
@@ -287,18 +591,10 @@ const TeacherWhiteboard: React.FC = () => {
 
   // Handle brush type change
   const handleBrushTypeChange = (type: string) => {
-    if (type === 'square') {
-      setDrawingState({
-        ...drawingState,
-        brushType: 'square',
-        strokeWidth: drawingState.strokeWidth * 1.5 // Make square brush significantly larger
-      });
-    } else {
-      setDrawingState({
-        ...drawingState,
-        brushType: 'round'
-      });
-    }
+    setDrawingState(prev => ({
+      ...prev,
+      brushType: type
+    }));
     setOpenDropdown(null);
   };
 
@@ -312,47 +608,15 @@ const TeacherWhiteboard: React.FC = () => {
 
   // Handle undo
   const handleUndo = async () => {
-    if (canvasRef.current && strokeHistory.length > 0) {
-      await canvasRef.current.undo();
-
-      // Update history
-      const newHistory = [...strokeHistory];
-      const lastPath = newHistory.pop();
-      setStrokeHistory(newHistory);
-      setRedoStack(prev => [...prev, lastPath]);
-
-      // Send updated canvas state
-      const paths = await canvasRef.current.exportPaths();
-      const userId = localStorage.getItem('userId');
-      if (userId && socket) {
-        socket.emit('whiteboardUpdate', {
-          teacherId: userId,
-          whiteboardData: JSON.stringify(paths)
-        });
-      }
+    if (canvasRef.current) {
+      canvasRef.current.undo();
     }
   };
 
   // Handle redo
   const handleRedo = async () => {
-    if (canvasRef.current && redoStack.length > 0) {
-      await canvasRef.current.redo();
-
-      // Update history
-      const newRedoStack = [...redoStack];
-      const pathToRestore = newRedoStack.pop();
-      setRedoStack(newRedoStack);
-      setStrokeHistory(prev => [...prev, pathToRestore]);
-
-      // Send updated canvas state
-      const paths = await canvasRef.current.exportPaths();
-      const userId = localStorage.getItem('userId');
-      if (userId && socket) {
-        socket.emit('whiteboardUpdate', {
-          teacherId: userId,
-          whiteboardData: JSON.stringify(paths)
-        });
-      }
+    if (canvasRef.current) {
+      canvasRef.current.redo();
     }
   };
 
@@ -557,16 +821,14 @@ const TeacherWhiteboard: React.FC = () => {
                         key={brush.value}
                         onClick={() => handleBrushTypeChange(brush.value)}
                         className={`flex items-center justify-between px-3 py-2 rounded hover:bg-gray-100 ${
-                          (drawingState.brushType === brush.value ||
-                           (brush.value.startsWith('round-') && drawingState.brushType === 'round'))
-                            ? 'bg-gray-100' : ''
+                          drawingState.brushType === brush.value ? 'bg-gray-100' : ''
                         }`}
                       >
                         <div className="flex items-center gap-2">
                           <Paintbrush size={16} />
                           <span>{brush.name}</span>
                         </div>
-                        <span className="text-xs text-gray-500">{(brush as any).description}</span>
+                        <span className="text-xs text-gray-500">{brush.description}</span>
                       </button>
                     ))}
                   </div>
@@ -577,25 +839,20 @@ const TeacherWhiteboard: React.FC = () => {
         )}
 
         <div id="whiteboard-container" className="border rounded-lg overflow-hidden bg-white">
-          <ReactSketchCanvas
+          <CustomCanvas
             ref={canvasRef}
             strokeWidth={drawingState.strokeWidth}
             strokeColor={drawingState.isEraser ? "#FFFFFF" : drawingState.color}
-            canvasColor="white"
-            width={`${canvasSize.width}px`}
-            height={`${canvasSize.height}px`}
-            exportWithBackgroundImage={false}
-            withTimestamp={false}
-            allowOnlyPointerType="all"
-            lineCap={drawingState.brushType as "round" | "butt" | "square"}
-            lineJoin={drawingState.brushType === "square" ? "miter" : "round"}
-            preserveBackgroundImageAspectRatio="none" // Try adding this
+            brushType={drawingState.brushType}
+            width={canvasSize.width}
+            height={canvasSize.height}
+            opacity={drawingState.opacity}
+            isEraser={drawingState.isEraser}
             style={{
               opacity: drawingState.opacity,
             }}
             className="touch-none"
             onStroke={handleStroke}
-            onChange={handleStroke}
           />
         </div>
       </div>
