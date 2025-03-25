@@ -1,21 +1,19 @@
 import express from 'express';
-import { auth } from '../middleware/auth.js';
+import { auth, studentAuth } from '../middleware/auth.js';
 import Session from '../models/Session.js';
 
 const router = express.Router();
 
 // Create a new session
-router.post('/', auth, async (req, res) => {
+router.post('/', auth, studentAuth, async (req, res) => {
   try {
-    const { teacherId, videoUrl, audioUrl, whiteboardData, startTime, endTime } = req.body;
+    const { teacherId, videoUrl, whiteboardData } = req.body;
     const session = new Session({
       teacherId,
-      studentId: req.user.userId,
+      studentId: req.user.userId, // This ensures the session is tied to the current student
       videoUrl,
-      audioUrl,
       whiteboardData,
-      startTime: startTime || new Date(),
-      endTime: endTime || new Date()
+      endTime: new Date()
     });
     await session.save();
     res.status(201).json(session);
@@ -25,19 +23,13 @@ router.post('/', auth, async (req, res) => {
   }
 });
 
-// Get all sessions for a user (both as teacher and student)
-router.get('/', auth, async (req, res) => {
+// Get student's saved sessions
+router.get('/student', auth, studentAuth, async (req, res) => {
   try {
-    const userId = req.user.userId;
-    const sessions = await Session.find({
-      $or: [
-        { teacherId: userId },
-        { studentId: userId }
-      ]
-    })
-    .populate('teacherId', 'firstName lastName')
-    .sort({ createdAt: -1 });
-    
+    // Only fetch sessions where studentId matches the current user's ID
+    const sessions = await Session.find({ studentId: req.user.userId })
+      .populate('teacherId', 'firstName lastName')
+      .sort({ createdAt: -1 });
     res.json(sessions);
   } catch (error) {
     console.error('Error fetching sessions:', error);
@@ -46,15 +38,12 @@ router.get('/', auth, async (req, res) => {
 });
 
 // Delete a session
-router.delete('/:id', auth, async (req, res) => {
+router.delete('/:id', auth, studentAuth, async (req, res) => {
   try {
-    const userId = req.user.userId;
+    // Only allow deletion if the session belongs to the current student
     const session = await Session.findOne({
       _id: req.params.id,
-      $or: [
-        { teacherId: userId },
-        { studentId: userId }
-      ]
+      studentId: req.user.userId
     });
 
     if (!session) {

@@ -1,3 +1,5 @@
+// brushUtils.ts - Simple utility functions for shape brushes
+
 // Interface for brush strokes
 export interface StrokePoint {
     x: number;
