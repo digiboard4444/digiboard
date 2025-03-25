@@ -1,34 +1,24 @@
-import React, { useRef, useState, useEffect, useCallback, MouseEvent as ReactMouseEvent } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
-import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown } from 'lucide-react';
+import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown, Square, Triangle } from 'lucide-react';
 import { io } from 'socket.io-client';
 import type { TypedSocket } from '../../types/socket';
+import { drawCircleBrush, drawSquareBrush, drawTriangleBrush, StrokePoint, BrushOptions } from '../../lib/brushUtils';
 
-// Custom brush type definitions
-interface StrokePoint {
-  x: number;
-  y: number;
-}
+let socket: TypedSocket | null = null;
 
-interface BrushOptions {
-  color: string;
-  size: number;
-  opacity: number;
-}
-
-// Custom brush drawing functions
-const drawCircleBrush = (
-  ctx: CanvasRenderingContext2D,
-  point: StrokePoint,
-  options: BrushOptions
-) => {
-  ctx.beginPath();
-  ctx.globalAlpha = options.opacity;
-  ctx.fillStyle = options.color;
-  ctx.arc(point.x, point.y, options.size / 2, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.closePath();
-  ctx.globalAlpha = 1; // Reset global alpha
+const initializeSocket = () => {
+  if (!socket) {
+    socket = io(import.meta.env.VITE_API_URL, {
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      timeout: 60000,
+      withCredentials: true
+    }) as TypedSocket;
+  }
+  return socket;
 };
 
 // Stroke styles configuration
@@ -60,10 +50,11 @@ const OPACITY_OPTIONS = [
   { name: '100%', value: 1.0 },
 ];
 
-// Simplified brush types - only circle and dotted circle
+// Simplified brush types - only circle, square, and triangle
 const BRUSH_TYPES = [
-  { name: 'Solid Circle', value: 'circle', icon: Circle, description: 'Solid round brush tip' },
-  { name: 'Dotted Circle', value: 'dotted-circle', icon: Circle, description: 'Scattered circular brush' },
+  { name: 'Circle', value: 'circle', icon: Circle, description: 'Round brush tip' },
+  { name: 'Square', value: 'square', icon: Square, description: 'Square brush tip' },
+  { name: 'Triangle', value: 'triangle', icon: Triangle, description: 'Triangle brush tip' },
 ];
 
 interface DrawingState {
@@ -75,15 +66,10 @@ interface DrawingState {
 }
 
 const TeacherWhiteboard: React.FC = () => {
-  // Refs
   const canvasRef = useRef<ReactSketchCanvasRef | null>(null);
   const customCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const customCtxRef = useRef<CanvasRenderingContext2D | null>(null);
-  const isDrawingRef = useRef(false);
-  const lastPointRef = useRef<StrokePoint | null>(null);
-  const socketRef = useRef<TypedSocket | null>(null);
 
-  // State
   const [isLive, setIsLive] = useState(false);
   const [showStartModal, setShowStartModal] = useState(false);
   const [showStopModal, setShowStopModal] = useState(false);
@@ -100,61 +86,13 @@ const TeacherWhiteboard: React.FC = () => {
     isEraser: false,
   });
 
-  // Dropdown state
+  // Dropdown states
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
 
   // Custom stroke history for undo/redo
   const [strokeHistory, setStrokeHistory] = useState<any[]>([]);
   const [redoStack, setRedoStack] = useState<any[]>([]);
 
-  // Initialize socket connection
-  const initializeSocket = useCallback(() => {
-    if (!socketRef.current) {
-      socketRef.current = io(import.meta.env.VITE_API_URL, {
-        transports: ['websocket', 'polling'],
-        reconnection: true,
-        reconnectionAttempts: 5,
-        reconnectionDelay: 1000,
-        timeout: 60000,
-        withCredentials: true
-      }) as TypedSocket;
-
-      // Setup socket event listeners
-      const socket = socketRef.current;
-      socket.on('connect', handleSocketConnect);
-      socket.on('disconnect', handleSocketDisconnect);
-      socket.on('liveError', handleLiveError);
-    }
-    return socketRef.current;
-  }, []);
-
-  // Socket event handlers
-  const handleSocketConnect = useCallback(() => {
-    console.log('Connected to server');
-    setIsConnecting(false);
-    const userId = localStorage.getItem('userId');
-    if (isLive && userId) {
-      socketRef.current?.emit('startLive', userId);
-      handleStroke(); // Send current canvas state
-    }
-  }, [isLive]);
-
-  const handleSocketDisconnect = useCallback(() => {
-    console.log('Disconnected from server');
-    setIsLive(false);
-    setIsConnecting(true);
-  }, []);
-
-  const handleLiveError = useCallback((data: { message: string }) => {
-    setError(data.message);
-    setShowStartModal(false);
-    setIsLive(false);
-    if (canvasRef.current) {
-      canvasRef.current.clearCanvas();
-    }
-  }, []);
-
-  // Resize handling
   useEffect(() => {
     const handleResize = () => {
       const container = document.getElementById('whiteboard-container');
@@ -167,22 +105,8 @@ const TeacherWhiteboard: React.FC = () => {
 
     handleResize();
     window.addEventListener('resize', handleResize);
-    return () => {
-      window.removeEventListener('resize', handleResize);
-
-      // Cleanup socket
-      if (socketRef.current) {
-        const userId = localStorage.getItem('userId');
-        if (userId && isLive) {
-          socketRef.current.emit('stopLive', userId);
-        }
-        socketRef.current.off('connect');
-        socketRef.current.off('disconnect');
-        socketRef.current.off('liveError');
-        socketRef.current.disconnect();
-      }
-    };
-  }, [isLive]);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // Initialize custom canvas for specialized brushes
   useEffect(() => {
@@ -197,81 +121,8 @@ const TeacherWhiteboard: React.FC = () => {
     }
   }, [canvasSize]);
 
-  // Initialize socket on component mount
-  useEffect(() => {
-    initializeSocket();
-  }, [initializeSocket]);
-
-  // Custom brush drawing function
-  const applyBrush = useCallback((point: StrokePoint) => {
-    if (!customCtxRef.current) return;
-
-    const options: BrushOptions = {
-      color: drawingState.isEraser ? '#FFFFFF' : drawingState.color,
-      size: drawingState.strokeWidth,
-      opacity: drawingState.opacity
-    };
-
-    switch (drawingState.brushType) {
-      case 'dotted-circle':
-        // For dotted circle, add more spacing and randomness
-        if (Math.random() > 0.3) { // Reduce frequency of dots
-          const spacing = drawingState.strokeWidth * 1.5; // Increase spacing
-          const jitterX = (Math.random() - 0.5) * spacing;
-          const jitterY = (Math.random() - 0.5) * spacing;
-
-          drawCircleBrush(customCtxRef.current, {
-            x: point.x + jitterX,
-            y: point.y + jitterY
-          }, {
-            ...options,
-            size: drawingState.strokeWidth * 0.7 // Smaller circles
-          });
-        }
-        break;
-      case 'circle':
-      default:
-        drawCircleBrush(customCtxRef.current, point, options);
-        break;
-    }
-  }, [drawingState]);
-
-  // Custom drawing handler
-  const handleMouseDown = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
-    if (!customCanvasRef.current || !customCtxRef.current) return;
-
-    const rect = customCanvasRef.current.getBoundingClientRect();
-    const point: StrokePoint = {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top
-    };
-
-    isDrawingRef.current = true;
-    lastPointRef.current = point;
-    applyBrush(point);
-  }, [applyBrush]);
-
-  const handleMouseMove = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
-    if (!isDrawingRef.current || !customCanvasRef.current || !customCtxRef.current) return;
-
-    const rect = customCanvasRef.current.getBoundingClientRect();
-    const point: StrokePoint = {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top
-    };
-
-    applyBrush(point);
-    lastPointRef.current = point;
-  }, [applyBrush]);
-
-  const handleMouseUp = useCallback(() => {
-    isDrawingRef.current = false;
-    lastPointRef.current = null;
-  }, []);
-
-  // Stroke and drawing management
   const handleStroke = useCallback(async () => {
-    if (isLive && canvasRef.current && socketRef.current) {
+    if (isLive && canvasRef.current && socket) {
       try {
         const paths = await canvasRef.current.exportPaths();
         const userId = localStorage.getItem('userId');
@@ -282,7 +133,7 @@ const TeacherWhiteboard: React.FC = () => {
 
         if (userId) {
           console.log('Sending whiteboard update');
-          socketRef.current.emit('whiteboardUpdate', {
+          socket.emit('whiteboardUpdate', {
             teacherId: userId,
             whiteboardData: JSON.stringify(paths)
           });
@@ -293,7 +144,72 @@ const TeacherWhiteboard: React.FC = () => {
     }
   }, [isLive]);
 
-  // Live session management
+  // Apply the appropriate brush based on the type
+  const applyBrush = useCallback((point: StrokePoint) => {
+    if (!customCtxRef.current) return;
+
+    const options: BrushOptions = {
+      color: drawingState.isEraser ? '#FFFFFF' : drawingState.color,
+      size: drawingState.strokeWidth,
+      opacity: drawingState.opacity
+    };
+
+    switch (drawingState.brushType) {
+      case 'square':
+        drawSquareBrush(customCtxRef.current, point, options);
+        break;
+      case 'triangle':
+        drawTriangleBrush(customCtxRef.current, point, options);
+        break;
+      case 'circle':
+      default:
+        drawCircleBrush(customCtxRef.current, point, options);
+        break;
+    }
+  }, [drawingState]);
+
+  useEffect(() => {
+    const socket = initializeSocket();
+    const userId = localStorage.getItem('userId');
+
+    const handleConnect = () => {
+      console.log('Connected to server');
+      setIsConnecting(false);
+      if (isLive && userId) {
+        socket.emit('startLive', userId);
+        handleStroke(); // Send current canvas state
+      }
+    };
+
+    const handleDisconnect = () => {
+      console.log('Disconnected from server');
+      setIsLive(false);
+      setIsConnecting(true);
+    };
+
+    const handleLiveError = (data: { message: string }) => {
+      setError(data.message);
+      setShowStartModal(false);
+      setIsLive(false);
+      if (canvasRef.current) {
+        canvasRef.current.clearCanvas();
+      }
+    };
+
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
+    socket.on('liveError', handleLiveError);
+
+    return () => {
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
+      socket.off('liveError', handleLiveError);
+      if (userId && isLive) {
+        socket.emit('stopLive', userId);
+      }
+    };
+  }, [isLive, handleStroke]);
+
   const handleStartLive = () => {
     setError(null);
     setShowStartModal(true);
@@ -305,14 +221,16 @@ const TeacherWhiteboard: React.FC = () => {
 
   const confirmStartLive = async () => {
     const userId = localStorage.getItem('userId');
+    const socket = initializeSocket();
+
     if (userId && canvasRef.current) {
       setIsLive(true);
       setShowStartModal(false);
-      socketRef.current?.emit('startLive', userId);
+      socket.emit('startLive', userId);
 
       // Send initial canvas state
       const paths = await canvasRef.current.exportPaths();
-      socketRef.current?.emit('whiteboardUpdate', {
+      socket.emit('whiteboardUpdate', {
         teacherId: userId,
         whiteboardData: JSON.stringify(paths)
       });
@@ -321,10 +239,12 @@ const TeacherWhiteboard: React.FC = () => {
 
   const confirmStopLive = () => {
     const userId = localStorage.getItem('userId');
+    const socket = initializeSocket();
+
     if (userId) {
       setIsLive(false);
       setShowStopModal(false);
-      socketRef.current?.emit('stopLive', userId);
+      socket.emit('stopLive', userId);
       if (canvasRef.current) {
         canvasRef.current.clearCanvas();
       }
@@ -334,13 +254,14 @@ const TeacherWhiteboard: React.FC = () => {
     }
   };
 
-  // Canvas management
   const handleClearCanvas = async () => {
     if (canvasRef.current && isLive) {
       await canvasRef.current.clearCanvas();
       const userId = localStorage.getItem('userId');
+      const socket = initializeSocket();
+
       if (userId) {
-        socketRef.current?.emit('whiteboardUpdate', {
+        socket.emit('whiteboardUpdate', {
           teacherId: userId,
           whiteboardData: JSON.stringify([])
         });
@@ -352,11 +273,13 @@ const TeacherWhiteboard: React.FC = () => {
     }
   };
 
-  // Dropdown and drawing state management
+  // Toggle dropdown menus
   const toggleDropdown = (menu: string) => {
-    setOpenDropdown(prevDropdown =>
-      prevDropdown === menu ? null : menu
-    );
+    if (openDropdown === menu) {
+      setOpenDropdown(null);
+    } else {
+      setOpenDropdown(menu);
+    }
   };
 
   // Close dropdown when clicking outside
@@ -371,7 +294,7 @@ const TeacherWhiteboard: React.FC = () => {
     };
   }, []);
 
-  // Drawing state update handlers
+  // Handle color change
   const handleColorChange = (color: string) => {
     setDrawingState(prev => ({
       ...prev,
@@ -381,6 +304,7 @@ const TeacherWhiteboard: React.FC = () => {
     setOpenDropdown(null);
   };
 
+  // Handle stroke size change
   const handleSizeChange = (size: number) => {
     setDrawingState(prev => ({
       ...prev,
@@ -389,6 +313,7 @@ const TeacherWhiteboard: React.FC = () => {
     setOpenDropdown(null);
   };
 
+  // Handle opacity change
   const handleOpacityChange = (opacity: number) => {
     setDrawingState(prev => ({
       ...prev,
@@ -397,6 +322,7 @@ const TeacherWhiteboard: React.FC = () => {
     setOpenDropdown(null);
   };
 
+  // Handle brush type change
   const handleBrushTypeChange = (type: string) => {
     setDrawingState(prev => ({
       ...prev,
@@ -406,6 +332,7 @@ const TeacherWhiteboard: React.FC = () => {
     setOpenDropdown(null);
   };
 
+  // Toggle eraser
   const toggleEraser = () => {
     setDrawingState(prev => ({
       ...prev,
@@ -413,7 +340,7 @@ const TeacherWhiteboard: React.FC = () => {
     }));
   };
 
-  // Undo/Redo handlers
+  // Handle undo
   const handleUndo = async () => {
     if (canvasRef.current && strokeHistory.length > 0) {
       await canvasRef.current.undo();
@@ -427,8 +354,8 @@ const TeacherWhiteboard: React.FC = () => {
       // Send updated canvas state
       const paths = await canvasRef.current.exportPaths();
       const userId = localStorage.getItem('userId');
-      if (userId && socketRef.current) {
-        socketRef.current.emit('whiteboardUpdate', {
+      if (userId && socket) {
+        socket.emit('whiteboardUpdate', {
           teacherId: userId,
           whiteboardData: JSON.stringify(paths)
         });
@@ -436,7 +363,7 @@ const TeacherWhiteboard: React.FC = () => {
     }
   };
 
-  // Redo handler
+  // Handle redo
   const handleRedo = async () => {
     if (canvasRef.current && redoStack.length > 0) {
       await canvasRef.current.redo();
@@ -450,8 +377,8 @@ const TeacherWhiteboard: React.FC = () => {
       // Send updated canvas state
       const paths = await canvasRef.current.exportPaths();
       const userId = localStorage.getItem('userId');
-      if (userId && socketRef.current) {
-        socketRef.current.emit('whiteboardUpdate', {
+      if (userId && socket) {
+        socket.emit('whiteboardUpdate', {
           teacherId: userId,
           whiteboardData: JSON.stringify(paths)
         });
@@ -547,18 +474,13 @@ const TeacherWhiteboard: React.FC = () => {
               <button
                 onClick={() => toggleDropdown('color')}
                 className="flex items-center gap-2 px-3 py-2 rounded hover:bg-gray-100"
-                style={{
-                  backgroundColor: drawingState.isEraser ? 'white' : drawingState.color,
-                  color: drawingState.isEraser || drawingState.color === '#FFFFFF' || drawingState.color === '#FFFF00' ? 'black' : 'white'
-                }}
+                style={{ backgroundColor: drawingState.isEraser ? 'white' : drawingState.color,
+                         color: drawingState.isEraser || drawingState.color === '#FFFFFF' || drawingState.color === '#FFFF00' ? 'black' : 'white' }}
               >
-                <div
-                  className="w-4 h-4 rounded-full"
-                  style={{
-                    backgroundColor: drawingState.isEraser ? 'white' : drawingState.color,
-                    border: '1px solid #ccc'
-                  }}
-                ></div>
+                <div className="w-4 h-4 rounded-full" style={{
+                  backgroundColor: drawingState.isEraser ? 'white' : drawingState.color,
+                  border: '1px solid #ccc'
+                }}></div>
                 <span>Color</span>
                 <ChevronDown size={16} />
               </button>
@@ -637,10 +559,7 @@ const TeacherWhiteboard: React.FC = () => {
                           drawingState.opacity === option.value ? 'bg-gray-100' : ''
                         }`}
                       >
-                        <div
-                          className="w-4 h-4 bg-gray-900 rounded-full"
-                          style={{ opacity: option.value }}
-                        ></div>
+                        <div className="w-4 h-4 bg-gray-900 rounded-full" style={{ opacity: option.value }}></div>
                         <span>{option.name}</span>
                       </button>
                     ))}
@@ -649,7 +568,7 @@ const TeacherWhiteboard: React.FC = () => {
               )}
             </div>
 
-            {/* Brush Type Selector */}
+            {/* Brush Type Selector - Simplified to just 3 options */}
             <div className="relative" onClick={(e) => e.stopPropagation()}>
               <button
                 onClick={() => toggleDropdown('brush')}
@@ -688,26 +607,7 @@ const TeacherWhiteboard: React.FC = () => {
           </div>
         )}
 
-        {/* Whiteboard Canvas Container */}
-        <div
-          id="whiteboard-container"
-          className="border rounded-lg overflow-hidden bg-white relative"
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
-        >
-          <canvas
-            ref={customCanvasRef}
-            width={canvasSize.width}
-            height={canvasSize.height}
-            style={{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              zIndex: 10
-            }}
-          />
+        <div id="whiteboard-container" className="border rounded-lg overflow-hidden bg-white">
           <ReactSketchCanvas
             ref={canvasRef}
             strokeWidth={drawingState.strokeWidth}
@@ -718,11 +618,9 @@ const TeacherWhiteboard: React.FC = () => {
             exportWithBackgroundImage={false}
             withTimestamp={false}
             allowOnlyPointerType="all"
-            lineCap="round"
+            lineCap={drawingState.brushType === 'square' ? 'square' : 'round'}
             style={{
               opacity: drawingState.opacity,
-              position: 'relative',
-              zIndex: 5
             }}
             className="touch-none"
             onStroke={handleStroke}
