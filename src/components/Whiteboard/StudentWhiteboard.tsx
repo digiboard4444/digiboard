@@ -32,16 +32,146 @@ const StudentWhiteboard: React.FC = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
 
+  // Custom canvas component to render the drawing
+  const CustomCanvasRenderer = useCallback(() => {
+    const canvasElementRef = useRef<HTMLCanvasElement | null>(null);
+
+    // Function to render the paths data onto the canvas
+    const renderPaths = useCallback((pathsData: any[]) => {
+      const canvas = canvasElementRef.current;
+      if (!canvas) return;
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      // Clear canvas
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Render each path
+      pathsData.forEach(path => {
+        const isEraser = path.isEraser || false;
+        const brushType = path.brushType || 'round';
+        const strokeWidth = path.strokeWidth || 4;
+        const strokeColor = isEraser ? '#FFFFFF' : (path.strokeColor || '#000000');
+
+        // Set drawing styles
+        ctx.lineWidth = strokeWidth;
+        ctx.strokeStyle = strokeColor;
+        ctx.fillStyle = strokeColor;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        if (brushType === 'dotted') {
+          // Render dotted path
+          if (path.points && Array.isArray(path.points)) {
+            path.points.forEach((point: {x: number, y: number}, index: number) => {
+              // Draw dotted circle at each point
+              const radius = strokeWidth / 2;
+              const dotCount = Math.max(8, Math.floor(radius * 2));
+              const dotSize = Math.max(1, strokeWidth / 8);
+
+              // Draw dots in a circle pattern
+              for (let i = 0; i < dotCount; i++) {
+                const angle = (i / dotCount) * Math.PI * 2;
+                const dotX = point.x + Math.cos(angle) * radius;
+                const dotY = point.y + Math.sin(angle) * radius;
+
+                ctx.beginPath();
+                ctx.arc(dotX, dotY, dotSize, 0, Math.PI * 2);
+                ctx.fill();
+              }
+
+              // Draw a dot in the center
+              ctx.beginPath();
+              ctx.arc(point.x, point.y, dotSize, 0, Math.PI * 2);
+              ctx.fill();
+            });
+          }
+        } else {
+          // Render regular path
+          if (path.points && Array.isArray(path.points) && path.points.length > 1) {
+            ctx.beginPath();
+            ctx.moveTo(path.points[0].x, path.points[0].y);
+
+            for (let i = 1; i < path.points.length; i++) {
+              if (path.points[i] && typeof path.points[i].x === 'number' && typeof path.points[i].y === 'number') {
+                ctx.lineTo(path.points[i].x, path.points[i].y);
+              }
+            }
+
+            ctx.stroke();
+          } else if (path.points && Array.isArray(path.points) && path.points.length === 1) {
+            // Draw a single point as a circle
+            const point = path.points[0];
+            if (point && typeof point.x === 'number' && typeof point.y === 'number') {
+              ctx.beginPath();
+              ctx.arc(point.x, point.y, strokeWidth / 2, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+        }
+      });
+    }, []);
+
+    // Update the canvas when new data is received
+    useEffect(() => {
+      const handleUpdate = () => {
+        if (lastUpdateRef.current && lastUpdateRef.current !== '[]') {
+          try {
+            const paths = JSON.parse(lastUpdateRef.current);
+            if (Array.isArray(paths)) {
+              renderPaths(paths);
+            }
+          } catch (error) {
+            console.error('Error parsing or rendering paths:', error);
+          }
+        } else {
+          // Clear canvas if no data
+          const canvas = canvasElementRef.current;
+          if (canvas) {
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.clearRect(0, 0, canvas.width, canvas.height);
+            }
+          }
+        }
+      };
+
+      handleUpdate();
+
+      // Set up a listener for whiteboard updates
+      const socket = initializeSocket();
+      socket.on('whiteboardUpdate', () => {
+        handleUpdate();
+      });
+
+      return () => {
+        socket.off('whiteboardUpdate', handleUpdate);
+      };
+    }, [renderPaths, canvasSize.width, canvasSize.height]);
+
+    return (
+      <canvas
+        ref={canvasElementRef}
+        width={canvasSize.width}
+        height={canvasSize.height}
+        style={{
+          touchAction: 'none',
+          pointerEvents: 'none',
+          background: 'white'
+        }}
+      />
+    );
+  }, [canvasSize.width, canvasSize.height]);
+
   const handleWhiteboardUpdate = useCallback(async (data: WhiteboardUpdate) => {
-    if (!canvasRef.current) return;
+    if (!data.whiteboardData) return;
 
     try {
       lastUpdateRef.current = data.whiteboardData;
-      await canvasRef.current.clearCanvas();
-      if (data.whiteboardData && data.whiteboardData !== '[]') {
-        const paths = JSON.parse(data.whiteboardData);
-        await canvasRef.current.loadPaths(paths);
-      }
+
+      // No need to directly update ReactSketchCanvas since we're using our custom renderer
+      // This data will be used by CustomCanvasRenderer
     } catch (error) {
       console.error('Error updating whiteboard:', error);
     }
@@ -120,9 +250,8 @@ const StudentWhiteboard: React.FC = () => {
       setIsTeacherLive(false);
       setCurrentTeacherId(null);
       sessionStartTimeRef.current = null;
-      if (canvasRef.current) {
-        canvasRef.current.clearCanvas();
-      }
+      // We'll clear the canvas through the CustomCanvasRenderer
+      lastUpdateRef.current = '[]';
     };
 
     const handleConnect = () => {
@@ -209,19 +338,7 @@ const StudentWhiteboard: React.FC = () => {
           <p className="text-sm text-gray-600 mt-1">Session in progress</p>
         </div>
         <div id="student-whiteboard-container" className="border rounded-lg overflow-hidden bg-white">
-          <ReactSketchCanvas
-            ref={canvasRef}
-            strokeWidth={4}
-            strokeColor="black"
-            width={`${canvasSize.width}px`}
-            height={`${canvasSize.height}px`}
-            style={{ pointerEvents: 'none' }}
-            canvasColor="white"
-            exportWithBackgroundImage={false}
-            withTimestamp={false}
-            allowOnlyPointerType="all"
-            className="touch-none"
-          />
+          <CustomCanvasRenderer />
         </div>
       </div>
 
