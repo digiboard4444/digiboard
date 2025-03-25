@@ -243,23 +243,51 @@ const TeacherWhiteboard: React.FC = () => {
       audioRecorderRef.current = new AudioRecorder();
     }
 
-    console.log('Initializing audio recording...');
-
-    // Use a non-blocking approach
-    setTimeout(() => {
-      audioRecorderRef.current?.startRecording()
+    // Avoid using setTimeout and use a more direct approach
+    try {
+      audioRecorderRef.current.startRecording()
         .then(() => {
           setIsAudioRecording(true);
           console.log('Audio recording started successfully');
         })
         .catch((err) => {
           console.error('Error in audio recording:', err);
-          setError('Microphone access issue. The session will continue.');
+          // Don't set any error state to avoid disrupting the session
         });
-    }, 0);
+    } catch (error) {
+      console.error('Error initiating audio recording:', error);
+      // Don't propagate the error
+    }
   };
 
-  // Stop audio recording and get the blob
+  // Updated confirmation for starting live session
+  const confirmStartLive = async () => {
+    const userId = localStorage.getItem('userId');
+    const socket = initializeSocket();
+
+    if (userId && canvasRef.current) {
+      setIsLive(true);
+      setShowStartModal(false);
+
+      // First, notify the server that the session is starting
+      socket.emit('startLive', userId);
+
+      // Short delay to ensure the socket event is processed first
+      setTimeout(() => {
+        // Then start audio recording
+        startAudioRecording();
+
+        // Send initial canvas state
+        canvasRef.current?.exportPaths().then(paths => {
+          socket.emit('whiteboardUpdate', {
+            teacherId: userId,
+            whiteboardData: JSON.stringify(paths)
+          });
+        }).catch(console.error);
+      }, 500);
+    }
+  };
+
   const stopAudioRecording = async (): Promise<Blob | null> => {
     if (!audioRecorderRef.current) {
       return null;
@@ -272,110 +300,24 @@ const TeacherWhiteboard: React.FC = () => {
       return audioBlob;
     } catch (error) {
       console.error('Error stopping audio recording:', error);
-      setError('Failed to stop audio recording, but the session will still be saved.');
       setIsAudioRecording(false);
       return null;
     }
   };
 
-  useEffect(() => {
-    const socket = initializeSocket();
-    const userId = localStorage.getItem('userId');
-
-    const handleConnect = () => {
-      console.log('Connected to server');
-      setIsConnecting(false);
-      if (isLive && userId) {
-        socket.emit('startLive', userId);
-        handleStroke(); // Send current canvas state
-      }
-    };
-
-    const handleDisconnect = () => {
-      console.log('Disconnected from server');
-      setIsLive(false);
-      setIsConnecting(true);
-
-      // Stop audio recording if active
-      if (isAudioRecording) {
-        stopAudioRecording().catch(console.error);
-      }
-    };
-
-    const handleLiveError = (data: { message: string }) => {
-      setError(data.message);
-      setShowStartModal(false);
-      setIsLive(false);
-
-      // Stop audio recording if active
-      if (isAudioRecording) {
-        stopAudioRecording().catch(console.error);
-      }
-
-      if (canvasRef.current) {
-        canvasRef.current.clearCanvas();
-      }
-    };
-
-    socket.on('connect', handleConnect);
-    socket.on('disconnect', handleDisconnect);
-    socket.on('liveError', handleLiveError);
-
-    return () => {
-      socket.off('connect', handleConnect);
-      socket.off('disconnect', handleDisconnect);
-      socket.off('liveError', handleLiveError);
-
-      // Clean up audio recording
-      if (isAudioRecording) {
-        stopAudioRecording().catch(console.error);
-      }
-
-      if (userId && isLive) {
-        socket.emit('stopLive', userId);
-      }
-    };
-  }, [isLive, handleStroke, isAudioRecording]);
-
-  const handleStartLive = () => {
-    setError(null);
-    setShowStartModal(true);
-  };
-
-  const handleStopLive = () => {
-    setShowStopModal(true);
-  };
-
-  const confirmStartLive = async () => {
-    const userId = localStorage.getItem('userId');
-    const socket = initializeSocket();
-
-    if (userId && canvasRef.current) {
-      setIsLive(true);
-      setShowStartModal(false);
-
-      // Start live session
-      socket.emit('startLive', userId);
-
-      // Always start audio recording automatically when session starts
-      // No user control for audio - it records the entire session
-      startAudioRecording();
-
-      // Send initial canvas state
-      const paths = await canvasRef.current.exportPaths();
-      socket.emit('whiteboardUpdate', {
-        teacherId: userId,
-        whiteboardData: JSON.stringify(paths)
-      });
-    }
-  };
-
+  // Updated confirmation for stopping live session
   const confirmStopLive = async () => {
     const userId = localStorage.getItem('userId');
     const socket = initializeSocket();
 
     if (userId) {
-      // Always attempt to stop audio recording when session ends
+      // First, notify that session is ending
+      socket.emit('sessionEnded', {
+        teacherId: userId,
+        hasAudio: isAudioRecording
+      });
+
+      // Then, stop audio recording
       let audioBlob = null;
       if (isAudioRecording) {
         try {
@@ -396,37 +338,28 @@ const TeacherWhiteboard: React.FC = () => {
           reader.onloadend = () => {
             const base64data = reader.result as string;
 
-            // Send audio data to server first
+            // Send audio data to server
             socket.emit('audioData', {
               teacherId: userId,
               audioData: base64data
             });
 
-            // Notify that session ended with audio
-            socket.emit('sessionEnded', {
-              teacherId: userId,
-              hasAudio: true
-            });
-
-            // Finally stop the live session
-            socket.emit('stopLive', userId);
+            // Finally, after all other events, stop the live session
+            setTimeout(() => {
+              socket.emit('stopLive', userId);
+            }, 500);
           };
         } catch (error) {
           console.error('Error processing audio:', error);
           // Just stop the session if audio processing fails
-          socket.emit('sessionEnded', {
-            teacherId: userId,
-            hasAudio: false
-          });
           socket.emit('stopLive', userId);
         }
       } else {
         // No audio blob available, just end the session
-        socket.emit('sessionEnded', {
-          teacherId: userId,
-          hasAudio: false
-        });
-        socket.emit('stopLive', userId);
+        // Add a short delay to ensure other events are processed first
+        setTimeout(() => {
+          socket.emit('stopLive', userId);
+        }, 500);
       }
 
       // Clear all local states

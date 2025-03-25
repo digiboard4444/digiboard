@@ -1,5 +1,4 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { toBlobURL } from '@ffmpeg/util';
 
 export class AudioRecorder {
   private mediaRecorder: MediaRecorder | null = null;
@@ -12,44 +11,15 @@ export class AudioRecorder {
   constructor() {}
 
   private async init() {
-    // If already initialized, return early to prevent duplicate initialization
-    if (this.isInitialized) return true;
-
-    if (!this.ffmpeg) {
-      this.ffmpeg = new FFmpeg();
-
-      try {
-        // Host the FFmpeg files locally rather than using unpkg.com
-        // This avoids CORS and service unavailability issues
-        const baseURL = '/assets/ffmpeg';
-
-        await this.ffmpeg.load({
-          coreURL: `${baseURL}/ffmpeg-core.js`,
-          wasmURL: `${baseURL}/ffmpeg-core.wasm`,
-          workerURL: `${baseURL}/ffmpeg-core.worker.js`,
-          logger: () => {}, // Silent logger
-        });
-
-        this.isInitialized = true;
-        console.log('FFmpeg loaded successfully');
-        return true;
-      } catch (error) {
-        console.error('Failed to load FFmpeg:', error);
-        // Even if FFmpeg fails, don't throw an exception here
-        // We'll handle this differently to avoid interrupting the socket connection
-        return false;
-      }
-    }
-
+    // Skip FFmpeg initialization entirely - we'll just record audio
+    // We'll handle FFmpeg in a separate service if needed
+    this.isInitialized = true;
     return true;
   }
 
   public async startRecording(): Promise<void> {
-    // Try to initialize FFmpeg, but don't throw if it fails
-    const ffmpegInitialized = await this.init().catch(err => {
-      console.warn('FFmpeg initialization failed, continuing with audio only:', err);
-      return false;
-    });
+    // Don't try to initialize FFmpeg - it's causing worker issues
+    this.isInitialized = true;
 
     try {
       // Request microphone access
@@ -81,7 +51,7 @@ export class AudioRecorder {
   }
 
   public async stopRecording(): Promise<Blob> {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       if (!this.mediaRecorder || !this.isRecording) {
         // Return an empty blob instead of rejecting
         console.warn('No recording in progress, returning empty blob');
@@ -113,55 +83,10 @@ export class AudioRecorder {
     });
   }
 
+  // We'll skip the mergeAudioAndVideo method for now as it's causing FFmpeg issues
+  // This will just return the video blob for now
   public async mergeAudioAndVideo(audioBlob: Blob, videoBlob: Blob): Promise<Blob> {
-    // Try to initialize FFmpeg, but if it fails, just return the video blob
-    const ffmpegInitialized = await this.init().catch(err => {
-      console.warn('FFmpeg initialization failed, returning video only:', err);
-      return false;
-    });
-
-    if (!ffmpegInitialized || !this.ffmpeg) {
-      console.warn('FFmpeg not available, returning video only');
-      return videoBlob;
-    }
-
-    try {
-      console.log('Starting audio/video merge...');
-
-      // Convert audio blob to arrayBuffer
-      const audioData = new Uint8Array(await audioBlob.arrayBuffer());
-      // Convert video blob to arrayBuffer
-      const videoData = new Uint8Array(await videoBlob.arrayBuffer());
-
-      // Write files to FFmpeg virtual filesystem
-      await this.ffmpeg.writeFile('audio.webm', audioData);
-      await this.ffmpeg.writeFile('video.mp4', videoData);
-
-      // Execute FFmpeg command to merge audio and video
-      // -shortest will end the output when the shortest input stream ends
-      await this.ffmpeg.exec([
-        '-i', 'video.mp4',
-        '-i', 'audio.webm',
-        '-c:v', 'copy',
-        '-c:a', 'aac',
-        '-shortest',
-        'output.mp4'
-      ]);
-
-      // Read the output file
-      const data = await this.ffmpeg.readFile('output.mp4');
-
-      // Clean up
-      await this.ffmpeg.deleteFile('audio.webm');
-      await this.ffmpeg.deleteFile('video.mp4');
-      await this.ffmpeg.deleteFile('output.mp4');
-
-      console.log('Audio and video merge complete');
-      return new Blob([data], { type: 'video/mp4' });
-    } catch (error) {
-      console.error('Error merging audio and video:', error);
-      // If any error occurs during merging, return the original video
-      return videoBlob;
-    }
+    console.log('Audio/video merge is disabled due to FFmpeg issues');
+    return videoBlob;
   }
 }

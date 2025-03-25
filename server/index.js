@@ -56,6 +56,7 @@ io.on('connection', (socket) => {
   console.log('A user connected');
   let currentTeacherId = null;
   let isStudent = false;
+  let isAudioActive = false; // NEW: Track audio status separately from live status
 
   // Handle teacher status check
   socket.on('checkTeacherStatus', () => {
@@ -66,7 +67,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('startLive', (teacherId) => {
-    if (currentLiveTeacher) {
+    if (currentLiveTeacher && currentLiveTeacher !== teacherId) {
       // Another teacher is already live
       socket.emit('liveError', {
         message: 'Another teacher is currently live. Please try again later.'
@@ -98,12 +99,15 @@ io.on('connection', (socket) => {
     if (currentTeacherId === teacherId) {
       socket.leave(`teacher-${teacherId}`);
       currentTeacherId = null;
+      isAudioActive = false; // Reset audio status
     }
   });
 
-  // NEW HANDLER: Handle audio toggle events from teacher
+  // NEW: Handle audio recording status (separate from session status)
   socket.on('toggleAudio', (data) => {
     console.log('Teacher toggled audio:', data.teacherId, data.enabled);
+    isAudioActive = data.enabled;
+
     // Broadcast to students that the teacher has toggled audio
     socket.broadcast.to(`teacher-${data.teacherId}`).emit('audioToggle', {
       teacherId: data.teacherId,
@@ -138,6 +142,14 @@ io.on('connection', (socket) => {
       currentTeacherId = teacherId;
       // Send a single teacherOnline event to the joining student
       socket.emit('teacherOnline', { teacherId });
+
+      // Also send current audio status if available
+      if (isAudioActive) {
+        socket.emit('audioToggle', {
+          teacherId: teacherId,
+          enabled: isAudioActive
+        });
+      }
     }
   });
 
@@ -153,8 +165,10 @@ io.on('connection', (socket) => {
   });
 
   socket.on('whiteboardUpdate', (data) => {
-    console.log('Whiteboard update from teacher:', data.teacherId);
-    // Broadcast to all student in the room except the sender
+    // Don't log every update to reduce console noise
+    // console.log('Whiteboard update from teacher:', data.teacherId);
+
+    // Broadcast to all students in the room except the sender
     socket.broadcast.to(`teacher-${data.teacherId}`).emit('whiteboardUpdate', data);
   });
 
