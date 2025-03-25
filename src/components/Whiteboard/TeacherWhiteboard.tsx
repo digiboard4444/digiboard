@@ -163,7 +163,15 @@ const TeacherWhiteboard: React.FC = () => {
 
 
   // Update isLive state effect - separate from the socket setup
+  useEffect(() => {
+    if (!socketRef.current) return;
 
+    const userId = localStorage.getItem('userId');
+    if (isLive && userId) {
+      socketRef.current.emit('startLive', userId);
+      sendWhiteboardUpdate();
+    }
+  }, [isLive]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -235,7 +243,7 @@ const TeacherWhiteboard: React.FC = () => {
   }, [isLive, drawingState.brushType, customStrokes]);
 
   // When using standard brushes, send updates to students
-  const handleStroke = useCallback(async () => {
+   const handleStroke = useCallback(async () => {
     if (!isLive) return;
 
     try {
@@ -273,16 +281,6 @@ const TeacherWhiteboard: React.FC = () => {
       }
     }
   }, [isLive, drawingState.brushType, sendWhiteboardUpdate]);
-
-  useEffect(() => {
-    if (!socketRef.current) return;
-
-    const userId = localStorage.getItem('userId');
-    if (isLive && userId) {
-      socketRef.current.emit('startLive', userId);
-      sendWhiteboardUpdate();
-    }
-  }, [isLive, sendWhiteboardUpdate]);
 
   // Draw triangle function
   const drawTriangle = useCallback((startX: number, startY: number, size: number, color: string) => {
