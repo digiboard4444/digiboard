@@ -139,6 +139,16 @@ const TeacherWhiteboard: React.FC = () => {
   const [isConnecting, setIsConnecting] = useState(false);
   const [isAudioRecording, setIsAudioRecording] = useState(false);
 
+  const handleStartLive = () => {
+    setError(null);
+    setShowStartModal(true);
+  };
+
+  // Handler for the "Stop Live" button
+  const handleStopLive = () => {
+    setShowStopModal(true);
+  };
+
   // Drawing state
   const [drawingState, setDrawingState] = useState<DrawingState>({
     color: COLORS[0].value,
