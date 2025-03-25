@@ -88,7 +88,6 @@ const TeacherWhiteboard: React.FC = () => {
   const customCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastPointRef = useRef<{ x: number, y: number } | null>(null);
   const socketRef = useRef<TypedSocket | null>(null);
-  const handleStrokeRef = useRef<Function | null>(null);
 
   const [isLive, setIsLive] = useState(false);
   const [showStartModal, setShowStartModal] = useState(false);
@@ -115,7 +114,96 @@ const TeacherWhiteboard: React.FC = () => {
   const [redoStack, setRedoStack] = useState<any[]>([]);
   const [customStrokes, setCustomStrokes] = useState<any[]>([]);
 
-  // 1. Define sendWhiteboardUpdate first as it doesn't depend on other functions
+  // Initialize socket once on component mount and store in ref
+  useEffect(() => {
+    socketRef.current = initializeSocket();
+
+    // Setup socket event handlers
+    const socket = socketRef.current;
+    const userId = localStorage.getItem('userId');
+
+    const handleConnect = () => {
+      console.log('Connected to server');
+      setIsConnecting(false);
+      if (isLive && userId) {
+        socket.emit('startLive', userId);
+        sendWhiteboardUpdate(); // Send current canvas state
+      }
+    };
+
+    const handleDisconnect = () => {
+      console.log('Disconnected from server');
+      setIsConnecting(true);
+    };
+
+    const handleLiveError = (data: { message: string }) => {
+      setError(data.message);
+      setShowStartModal(false);
+      setIsLive(false);
+      if (canvasRef.current) {
+        canvasRef.current.clearCanvas();
+      }
+    };
+
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
+    socket.on('liveError', handleLiveError);
+
+    return () => {
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
+      socket.off('liveError', handleLiveError);
+
+      if (userId && isLive) {
+        socket.emit('stopLive', userId);
+      }
+    };
+  }, []);
+
+
+
+  // Update isLive state effect - separate from the socket setup
+
+
+  useEffect(() => {
+    const handleResize = () => {
+      const container = document.getElementById('whiteboard-container');
+      if (container) {
+        const width = container.clientWidth;
+        const height = Math.min(window.innerHeight - 200, width * 0.75);
+        setCanvasSize({ width, height });
+      }
+    };
+
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Setup custom canvas when using triangle brush
+  useEffect(() => {
+    if (drawingState.brushType === 'triangle') {
+      if (!customCanvasRef.current && canvasContainerRef.current) {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvasSize.width;
+        canvas.height = canvasSize.height;
+        canvas.style.position = 'absolute';
+        canvas.style.top = '0';
+        canvas.style.left = '0';
+        canvas.style.pointerEvents = 'none';
+        canvas.style.zIndex = '10';
+        customCanvasRef.current = canvas;
+        canvasContainerRef.current.appendChild(canvas);
+      }
+    } else {
+      if (customCanvasRef.current && canvasContainerRef.current) {
+        canvasContainerRef.current.removeChild(customCanvasRef.current);
+        customCanvasRef.current = null;
+      }
+    }
+  }, [drawingState.brushType, canvasSize]);
+
+  // Separate function to send whiteboard updates
   const sendWhiteboardUpdate = useCallback(async () => {
     if (!isLive || !socketRef.current) return;
 
@@ -146,7 +234,7 @@ const TeacherWhiteboard: React.FC = () => {
     }
   }, [isLive, drawingState.brushType, customStrokes]);
 
-  // 2. Next, define handleStroke which uses sendWhiteboardUpdate
+  // When using standard brushes, send updates to students
   const handleStroke = useCallback(async () => {
     if (!isLive) return;
 
@@ -168,12 +256,7 @@ const TeacherWhiteboard: React.FC = () => {
     }
   }, [isLive, drawingState.brushType, customStrokes, sendWhiteboardUpdate]);
 
-  // Store handleStroke in ref so other functions can access it without dependency cycles
-  useEffect(() => {
-    handleStrokeRef.current = handleStroke;
-  }, [handleStroke]);
-
-  // 3. Define handleStandardStroke which uses sendWhiteboardUpdate
+  // Then update handleStandardStroke to include handleStroke in dependencies
   const handleStandardStroke = useCallback(async () => {
     if (isLive && canvasRef.current && drawingState.brushType !== 'triangle') {
       try {
@@ -191,7 +274,17 @@ const TeacherWhiteboard: React.FC = () => {
     }
   }, [isLive, drawingState.brushType, sendWhiteboardUpdate]);
 
-  // 4. Define draw triangle function
+  useEffect(() => {
+    if (!socketRef.current) return;
+
+    const userId = localStorage.getItem('userId');
+    if (isLive && userId) {
+      socketRef.current.emit('startLive', userId);
+      sendWhiteboardUpdate();
+    }
+  }, [isLive, sendWhiteboardUpdate]);
+
+  // Draw triangle function
   const drawTriangle = useCallback((startX: number, startY: number, size: number, color: string) => {
     if (!customCanvasRef.current) return;
 
@@ -211,7 +304,7 @@ const TeacherWhiteboard: React.FC = () => {
     ctx.fill();
   }, [drawingState.opacity]);
 
-  // 5. Handle custom brush strokes
+  // Handle custom brush strokes
   const handleTriangleStroke = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     if (!isLive || drawingState.brushType !== 'triangle' || drawingState.isEraser) return;
 
@@ -250,7 +343,10 @@ const TeacherWhiteboard: React.FC = () => {
     lastPointRef.current = { x, y };
   }, [isLive, drawingState, drawTriangle]);
 
-  // 6. Define mouse/touch event handlers using the ref
+
+
+
+  // Mouse/touch event handlers for custom brush
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (drawingState.brushType === 'triangle') {
       setIsDrawing(true);
@@ -265,12 +361,12 @@ const TeacherWhiteboard: React.FC = () => {
   }, [isDrawing, drawingState.brushType, handleTriangleStroke]);
 
   const handleMouseUp = useCallback(() => {
-    if (isDrawing && drawingState.brushType === 'triangle' && handleStrokeRef.current) {
+    if (isDrawing && drawingState.brushType === 'triangle') {
       setIsDrawing(false);
-      // Use the ref instead of direct function to avoid circular dependencies
-      handleStrokeRef.current();
+      // Update stroke history and send update to students
+      handleStroke();
     }
-  }, [isDrawing, drawingState.brushType]);
+  }, [isDrawing, drawingState.brushType, handleStroke]);
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     if (drawingState.brushType === 'triangle') {
@@ -286,14 +382,14 @@ const TeacherWhiteboard: React.FC = () => {
   }, [isDrawing, drawingState.brushType, handleTriangleStroke]);
 
   const handleTouchEnd = useCallback(() => {
-    if (isDrawing && drawingState.brushType === 'triangle' && handleStrokeRef.current) {
+    if (isDrawing && drawingState.brushType === 'triangle') {
       setIsDrawing(false);
-      // Use the ref instead of direct function to avoid circular dependencies
-      handleStrokeRef.current();
+      // Update stroke history and send update to students
+      handleStroke();
     }
-  }, [isDrawing, drawingState.brushType]);
+  }, [isDrawing, drawingState.brushType, handleStroke]);
 
-  // 7. Define UI control handlers
+
   const handleStartLive = () => {
     setError(null);
     setShowStartModal(true);
@@ -375,6 +471,18 @@ const TeacherWhiteboard: React.FC = () => {
       setOpenDropdown(menu);
     }
   };
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = () => {
+      setOpenDropdown(null);
+    };
+
+    document.addEventListener('click', handleClickOutside);
+    return () => {
+      document.removeEventListener('click', handleClickOutside);
+    };
+  }, []);
 
   // Handle color change
   const handleColorChange = (color: string) => {
@@ -490,113 +598,6 @@ const TeacherWhiteboard: React.FC = () => {
     const IconComponent = brush.icon;
     return <IconComponent size={16} />;
   };
-
-  // Initialize socket once on component mount and store in ref
-  useEffect(() => {
-    socketRef.current = initializeSocket();
-
-    // Setup socket event handlers
-    const socket = socketRef.current;
-    const userId = localStorage.getItem('userId');
-
-    const handleConnect = () => {
-      console.log('Connected to server');
-      setIsConnecting(false);
-      if (isLive && userId) {
-        socket.emit('startLive', userId);
-        sendWhiteboardUpdate(); // Send current canvas state
-      }
-    };
-
-    const handleDisconnect = () => {
-      console.log('Disconnected from server');
-      setIsConnecting(true);
-    };
-
-    const handleLiveError = (data: { message: string }) => {
-      setError(data.message);
-      setShowStartModal(false);
-      setIsLive(false);
-      if (canvasRef.current) {
-        canvasRef.current.clearCanvas();
-      }
-    };
-
-    socket.on('connect', handleConnect);
-    socket.on('disconnect', handleDisconnect);
-    socket.on('liveError', handleLiveError);
-
-    return () => {
-      socket.off('connect', handleConnect);
-      socket.off('disconnect', handleDisconnect);
-      socket.off('liveError', handleLiveError);
-
-      if (userId && isLive) {
-        socket.emit('stopLive', userId);
-      }
-    };
-  }, []);
-
-  // Update isLive state effect - separate from the socket setup
-  useEffect(() => {
-    if (!socketRef.current) return;
-
-    const userId = localStorage.getItem('userId');
-    if (isLive && userId) {
-      socketRef.current.emit('startLive', userId);
-      sendWhiteboardUpdate();
-    }
-  }, [isLive, sendWhiteboardUpdate]);
-
-  useEffect(() => {
-    const handleResize = () => {
-      const container = document.getElementById('whiteboard-container');
-      if (container) {
-        const width = container.clientWidth;
-        const height = Math.min(window.innerHeight - 200, width * 0.75);
-        setCanvasSize({ width, height });
-      }
-    };
-
-    handleResize();
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
-
-  // Setup custom canvas when using triangle brush
-  useEffect(() => {
-    if (drawingState.brushType === 'triangle') {
-      if (!customCanvasRef.current && canvasContainerRef.current) {
-        const canvas = document.createElement('canvas');
-        canvas.width = canvasSize.width;
-        canvas.height = canvasSize.height;
-        canvas.style.position = 'absolute';
-        canvas.style.top = '0';
-        canvas.style.left = '0';
-        canvas.style.pointerEvents = 'none';
-        canvas.style.zIndex = '10';
-        customCanvasRef.current = canvas;
-        canvasContainerRef.current.appendChild(canvas);
-      }
-    } else {
-      if (customCanvasRef.current && canvasContainerRef.current) {
-        canvasContainerRef.current.removeChild(customCanvasRef.current);
-        customCanvasRef.current = null;
-      }
-    }
-  }, [drawingState.brushType, canvasSize]);
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = () => {
-      setOpenDropdown(null);
-    };
-
-    document.addEventListener('click', handleClickOutside);
-    return () => {
-      document.removeEventListener('click', handleClickOutside);
-    };
-  }, []);
 
   return (
     <>
