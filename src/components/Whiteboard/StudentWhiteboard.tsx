@@ -26,6 +26,9 @@ class CustomStrokeRecorder {
   private ctx: CanvasRenderingContext2D;
   private width: number;
   private height: number;
+  private mediaRecorder: MediaRecorder | null = null;
+  private recordedChunks: Blob[] = [];
+  private frameRate: number = 30;
 
   constructor(width: number, height: number) {
     this.width = width;
@@ -38,30 +41,6 @@ class CustomStrokeRecorder {
     this.ctx = ctx;
   }
 
-  public async captureAsImage(): Promise<Blob> {
-    return new Promise((resolve, reject) => {
-      try {
-        // Make sure canvas is white background
-        this.ctx.fillStyle = 'white';
-        this.ctx.fillRect(0, 0, this.width, this.height);
-
-        // Convert canvas to PNG blob
-        this.canvas.toBlob((blob) => {
-          if (blob) {
-            console.log(`Image captured: ${blob.size} bytes, type: ${blob.type}`);
-            resolve(blob);
-          } else {
-            reject(new Error('Failed to create image blob'));
-          }
-        }, 'image/png', 0.95); // High quality PNG
-      } catch (error) {
-        console.error('Error capturing image:', error);
-        reject(error);
-      }
-    });
-  }
-
-  // Draw methods remain the same as in your original code
   private drawPath(path: any, timestamp: number): void {
     // Skip if path doesn't have valid points
     if (!path || !path.points || !Array.isArray(path.points) || path.points.length === 0) {
@@ -139,8 +118,7 @@ class CustomStrokeRecorder {
     }
   }
 
-  // Helper to create a frame with all paths
-  public createFrame(paths: any[]): void {
+  private createFrame(paths: any[]): void {
     // Clear canvas for this frame
     this.ctx.fillStyle = 'white';
     this.ctx.fillRect(0, 0, this.width, this.height);
@@ -155,6 +133,117 @@ class CustomStrokeRecorder {
         }
       });
     }
+  }
+
+  public async recordStrokes(paths: any[]): Promise<Blob> {
+    return new Promise((resolve, reject) => {
+      try {
+        // Draw all paths to the canvas first
+        this.createFrame(paths);
+
+        // Set up canvas stream with a higher framerate
+        const stream = this.canvas.captureStream(30);
+
+        // Add an audio track (silent) to ensure compatibility
+        // Some systems need audio+video for proper video file creation
+        const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const oscillator = audioCtx.createOscillator();
+        const dst = audioCtx.createMediaStreamDestination();
+        oscillator.connect(dst);
+        oscillator.start();
+
+        // Combine audio and video tracks
+        const audioTrack = dst.stream.getAudioTracks()[0];
+        const fullStream = new MediaStream([...stream.getVideoTracks(), audioTrack]);
+
+        // Find the best supported video format
+        let options = {};
+        if (MediaRecorder.isTypeSupported('video/webm;codecs=h264')) {
+          options = { mimeType: 'video/webm;codecs=h264', videoBitsPerSecond: 2500000 };
+        }
+        else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
+          options = { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 2500000 };
+        }
+        else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8')) {
+          options = { mimeType: 'video/webm;codecs=vp8', videoBitsPerSecond: 2500000 };
+        }
+        else if (MediaRecorder.isTypeSupported('video/webm')) {
+          options = { mimeType: 'video/webm', videoBitsPerSecond: 2500000 };
+        }
+        else if (MediaRecorder.isTypeSupported('video/mp4')) {
+          options = { mimeType: 'video/mp4', videoBitsPerSecond: 2500000 };
+        }
+
+        console.log('Using MediaRecorder options:', options);
+
+        // Set up media recorder with best options
+        this.mediaRecorder = new MediaRecorder(fullStream, options);
+        this.recordedChunks = [];
+
+        this.mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            this.recordedChunks.push(event.data);
+          }
+        };
+
+        this.mediaRecorder.onstop = () => {
+          try {
+            // Stop the audio context
+            oscillator.stop();
+            audioCtx.close();
+
+            // Create a video file with enough data to be valid
+            const mimeType = (options as any).mimeType || 'video/webm';
+            const blob = new Blob(this.recordedChunks, { type: mimeType });
+
+            console.log(`Recording complete: ${blob.size} bytes, type: ${blob.type}`);
+
+            if (blob.size > 0) {
+              resolve(blob);
+            } else {
+              reject(new Error('Empty video blob created'));
+            }
+          } catch (error) {
+            console.error('Error creating blob:', error);
+            reject(error);
+          }
+        };
+
+        // Start recording for a longer duration to ensure valid video
+        this.mediaRecorder.start();
+
+        // Animation loop to make the video more dynamic
+        let frameCount = 0;
+        const maxFrames = 120; // 4 seconds at 30fps
+        const animate = () => {
+          // Draw the frame with some animation
+          this.createFrame(paths);
+
+          // Add frame counter text to show movement
+          this.ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+          this.ctx.font = '12px Arial';
+          this.ctx.fillText(`Frame: ${frameCount}`, 10, 20);
+
+          frameCount++;
+
+          if (frameCount < maxFrames && this.mediaRecorder?.state === 'recording') {
+            requestAnimationFrame(animate);
+          } else {
+            // Stop recording after animation is complete
+            if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+              this.mediaRecorder.stop();
+            }
+          }
+        };
+
+        // Start the animation
+        animate();
+
+      } catch (error) {
+        console.error('Error setting up recording:', error);
+        reject(error);
+      }
+    });
   }
 }
 
@@ -217,14 +306,19 @@ const StudentWhiteboard: React.FC = () => {
         ctx.lineJoin = 'round';
 
         if (brushType === 'dotted') {
-          // Render dotted path (same as in CustomStrokeRecorder)
+          // Render dotted path
           path.points.forEach((point: {x: number, y: number}) => {
-            if (!point || typeof point.x !== 'number' || typeof point.y !== 'number') return;
+            // Make sure point has valid coordinates
+            if (!point || typeof point.x !== 'number' || typeof point.y !== 'number') {
+              return;
+            }
 
+            // Draw dotted circle at point
             const radius = strokeWidth / 2;
             const dotCount = Math.max(8, Math.floor(radius * 2));
             const dotSize = Math.max(1, strokeWidth / 8);
 
+            // Draw dots in a circle pattern
             for (let i = 0; i < dotCount; i++) {
               const angle = (i / dotCount) * Math.PI * 2;
               const dotX = point.x + Math.cos(angle) * radius;
@@ -235,6 +329,7 @@ const StudentWhiteboard: React.FC = () => {
               ctx.fill();
             }
 
+            // Draw a dot in the center
             ctx.beginPath();
             ctx.arc(point.x, point.y, dotSize, 0, Math.PI * 2);
             ctx.fill();
@@ -243,13 +338,18 @@ const StudentWhiteboard: React.FC = () => {
           // Render regular path
           if (path.points.length > 1) {
             ctx.beginPath();
+
+            // Make sure first point has valid coordinates
             if (typeof path.points[0].x === 'number' && typeof path.points[0].y === 'number') {
               ctx.moveTo(path.points[0].x, path.points[0].y);
+
               for (let i = 1; i < path.points.length; i++) {
+                // Make sure point has valid coordinates
                 if (typeof path.points[i].x === 'number' && typeof path.points[i].y === 'number') {
                   ctx.lineTo(path.points[i].x, path.points[i].y);
                 }
               }
+
               ctx.stroke();
             }
           } else if (path.points.length === 1) {
@@ -277,7 +377,7 @@ const StudentWhiteboard: React.FC = () => {
     setSaveError(null);
     setIsSaving(true);
     try {
-      console.log('Creating image from whiteboard...');
+      console.log('Creating video from strokes...');
       let paths;
       try {
         paths = JSON.parse(lastUpdateRef.current);
@@ -290,24 +390,19 @@ const StudentWhiteboard: React.FC = () => {
       }
 
       const recorder = new CustomStrokeRecorder(canvasSize.width, canvasSize.height);
+      const videoBlob = await recorder.recordStrokes(paths);
 
-      // Draw all the paths
-      recorder.createFrame(paths);
-
-      // Capture as image instead of video
-      const imageBlob = await recorder.captureAsImage();
-
-      if (!imageBlob || imageBlob.size === 0) {
-        throw new Error('Failed to create image: Empty blob');
+      if (!videoBlob || videoBlob.size === 0) {
+        throw new Error('Failed to create video: Empty blob');
       }
 
-      console.log(`Image blob created: ${imageBlob.size} bytes, type: ${imageBlob.type}`);
+      console.log(`Video blob created: ${videoBlob.size} bytes, type: ${videoBlob.type}`);
 
-      console.log('Uploading image to Cloudinary...');
-      const imageUrl = await cloudinaryUpload(imageBlob);
+      console.log('Uploading video to Cloudinary...');
+      const videoUrl = await cloudinaryUpload(videoBlob);
 
-      if (!imageUrl) {
-        throw new Error('Failed to get image URL after upload');
+      if (!videoUrl) {
+        throw new Error('Failed to get video URL after upload');
       }
 
       console.log('Saving session to backend...');
@@ -319,7 +414,7 @@ const StudentWhiteboard: React.FC = () => {
         },
         body: JSON.stringify({
           teacherId: currentTeacherId,
-          videoUrl: imageUrl, // We're using the image URL in place of video
+          videoUrl,
           whiteboardData: lastUpdateRef.current
         })
       });
