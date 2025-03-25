@@ -4,11 +4,12 @@ import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, 
 import { io } from 'socket.io-client';
 import type { TypedSocket } from '../../types/socket';
 
-let socket: TypedSocket | null = null;
+// Global socket instance to maintain connection across brush changes
+let globalSocket: TypedSocket | null = null;
 
 const initializeSocket = () => {
-  if (!socket) {
-    socket = io(import.meta.env.VITE_API_URL, {
+  if (!globalSocket) {
+    globalSocket = io(import.meta.env.VITE_API_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: 5,
@@ -17,7 +18,7 @@ const initializeSocket = () => {
       withCredentials: true
     }) as TypedSocket;
   }
-  return socket;
+  return globalSocket;
 };
 
 // Canvas dimensions
@@ -86,6 +87,8 @@ const TeacherWhiteboard: React.FC = () => {
   const canvasContainerRef = useRef<HTMLDivElement | null>(null);
   const customCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastPointRef = useRef<{ x: number, y: number } | null>(null);
+  const socketRef = useRef<TypedSocket | null>(null);
+  const handleStrokeRef = useRef<Function | null>(null);
 
   const [isLive, setIsLive] = useState(false);
   const [showStartModal, setShowStartModal] = useState(false);
@@ -112,45 +115,83 @@ const TeacherWhiteboard: React.FC = () => {
   const [redoStack, setRedoStack] = useState<any[]>([]);
   const [customStrokes, setCustomStrokes] = useState<any[]>([]);
 
-  useEffect(() => {
-    const handleResize = () => {
-      const container = document.getElementById('whiteboard-container');
-      if (container) {
-        const width = container.clientWidth;
-        const height = Math.min(window.innerHeight - 200, width * 0.75);
-        setCanvasSize({ width, height });
-      }
-    };
+  // 1. Define sendWhiteboardUpdate first as it doesn't depend on other functions
+  const sendWhiteboardUpdate = useCallback(async () => {
+    if (!isLive || !socketRef.current) return;
 
-    handleResize();
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
+    try {
+      let data: any = [];
 
-  // Setup custom canvas when using triangle brush
-  useEffect(() => {
-    if (drawingState.brushType === 'triangle') {
-      if (!customCanvasRef.current && canvasContainerRef.current) {
-        const canvas = document.createElement('canvas');
-        canvas.width = canvasSize.width;
-        canvas.height = canvasSize.height;
-        canvas.style.position = 'absolute';
-        canvas.style.top = '0';
-        canvas.style.left = '0';
-        canvas.style.pointerEvents = 'none';
-        canvas.style.zIndex = '10';
-        customCanvasRef.current = canvas;
-        canvasContainerRef.current.appendChild(canvas);
+      if (drawingState.brushType === 'triangle') {
+        // For custom triangle brush, use custom strokes
+        data = customStrokes;
+      } else if (canvasRef.current) {
+        // For standard brushes, use the built-in paths
+        data = await canvasRef.current.exportPaths();
       }
-    } else {
-      if (customCanvasRef.current && canvasContainerRef.current) {
-        canvasContainerRef.current.removeChild(customCanvasRef.current);
-        customCanvasRef.current = null;
+
+      const userId = localStorage.getItem('userId');
+
+      if (userId) {
+        socketRef.current.emit('whiteboardUpdate', {
+          teacherId: userId,
+          whiteboardData: JSON.stringify({
+            brushType: drawingState.brushType,
+            strokes: data
+          })
+        });
+      }
+    } catch (error) {
+      console.error('Error sending whiteboard update:', error);
+    }
+  }, [isLive, drawingState.brushType, customStrokes]);
+
+  // 2. Next, define handleStroke which uses sendWhiteboardUpdate
+  const handleStroke = useCallback(async () => {
+    if (!isLive) return;
+
+    try {
+      // Update stroke history
+      if (drawingState.brushType === 'triangle') {
+        setStrokeHistory(prevHistory => [...prevHistory, customStrokes]);
+      } else if (canvasRef.current) {
+        const paths = await canvasRef.current.exportPaths();
+        setStrokeHistory(prevHistory => [...prevHistory, paths]);
+      }
+
+      setRedoStack([]);
+
+      // Send update to students
+      sendWhiteboardUpdate();
+    } catch (error) {
+      console.error('Error handling stroke:', error);
+    }
+  }, [isLive, drawingState.brushType, customStrokes, sendWhiteboardUpdate]);
+
+  // Store handleStroke in ref so other functions can access it without dependency cycles
+  useEffect(() => {
+    handleStrokeRef.current = handleStroke;
+  }, [handleStroke]);
+
+  // 3. Define handleStandardStroke which uses sendWhiteboardUpdate
+  const handleStandardStroke = useCallback(async () => {
+    if (isLive && canvasRef.current && drawingState.brushType !== 'triangle') {
+      try {
+        const paths = await canvasRef.current.exportPaths();
+
+        // Update stroke history for undo/redo
+        setStrokeHistory(prevHistory => [...prevHistory, paths]);
+        setRedoStack([]);
+
+        // Send update to students
+        sendWhiteboardUpdate();
+      } catch (error) {
+        console.error('Error handling stroke:', error);
       }
     }
-  }, [drawingState.brushType, canvasSize]);
+  }, [isLive, drawingState.brushType, sendWhiteboardUpdate]);
 
-  // Draw triangle function
+  // 4. Define draw triangle function
   const drawTriangle = useCallback((startX: number, startY: number, size: number, color: string) => {
     if (!customCanvasRef.current) return;
 
@@ -170,7 +211,7 @@ const TeacherWhiteboard: React.FC = () => {
     ctx.fill();
   }, [drawingState.opacity]);
 
-  // Handle custom brush strokes
+  // 5. Handle custom brush strokes
   const handleTriangleStroke = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     if (!isLive || drawingState.brushType !== 'triangle' || drawingState.isEraser) return;
 
@@ -209,7 +250,7 @@ const TeacherWhiteboard: React.FC = () => {
     lastPointRef.current = { x, y };
   }, [isLive, drawingState, drawTriangle]);
 
-  // Mouse/touch event handlers for custom brush
+  // 6. Define mouse/touch event handlers using the ref
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (drawingState.brushType === 'triangle') {
       setIsDrawing(true);
@@ -224,10 +265,10 @@ const TeacherWhiteboard: React.FC = () => {
   }, [isDrawing, drawingState.brushType, handleTriangleStroke]);
 
   const handleMouseUp = useCallback(() => {
-    if (isDrawing && drawingState.brushType === 'triangle') {
+    if (isDrawing && drawingState.brushType === 'triangle' && handleStrokeRef.current) {
       setIsDrawing(false);
-      // Update stroke history and send update to students
-      handleStroke();
+      // Use the ref instead of direct function to avoid circular dependencies
+      handleStrokeRef.current();
     }
   }, [isDrawing, drawingState.brushType]);
 
@@ -245,115 +286,14 @@ const TeacherWhiteboard: React.FC = () => {
   }, [isDrawing, drawingState.brushType, handleTriangleStroke]);
 
   const handleTouchEnd = useCallback(() => {
-    if (isDrawing && drawingState.brushType === 'triangle') {
+    if (isDrawing && drawingState.brushType === 'triangle' && handleStrokeRef.current) {
       setIsDrawing(false);
-      // Update stroke history and send update to students
-      handleStroke();
+      // Use the ref instead of direct function to avoid circular dependencies
+      handleStrokeRef.current();
     }
   }, [isDrawing, drawingState.brushType]);
 
-  // When using standard brushes, send updates to students
-  const handleStandardStroke = useCallback(async () => {
-    if (isLive && canvasRef.current && socket && drawingState.brushType !== 'triangle') {
-      try {
-        const paths = await canvasRef.current.exportPaths();
-        const userId = localStorage.getItem('userId');
-
-        // Update stroke history for undo/redo
-        setStrokeHistory(prevHistory => [...prevHistory, paths]);
-        setRedoStack([]);
-
-        if (userId) {
-          console.log('Sending whiteboard update');
-          socket.emit('whiteboardUpdate', {
-            teacherId: userId,
-            whiteboardData: JSON.stringify(paths)
-          });
-        }
-      } catch (error) {
-        console.error('Error handling stroke:', error);
-      }
-    }
-  }, [isLive, drawingState.brushType]);
-
-  // Handle all strokes (both standard and custom)
-  const handleStroke = useCallback(async () => {
-    if (!isLive || !socket) return;
-
-    try {
-      let data: any = [];
-
-      if (drawingState.brushType === 'triangle') {
-        // For custom triangle brush, we need to convert our custom strokes to a format
-        // that can be reconstructed by the student
-        data = customStrokes;
-      } else if (canvasRef.current) {
-        // For standard brushes, use the built-in paths
-        data = await canvasRef.current.exportPaths();
-      }
-
-      const userId = localStorage.getItem('userId');
-
-      // Update stroke history
-      setStrokeHistory(prevHistory => [...prevHistory, data]);
-      setRedoStack([]);
-
-      if (userId) {
-        socket.emit('whiteboardUpdate', {
-          teacherId: userId,
-          whiteboardData: JSON.stringify({
-            brushType: drawingState.brushType,
-            strokes: data
-          })
-        });
-      }
-    } catch (error) {
-      console.error('Error handling stroke:', error);
-    }
-  }, [isLive, drawingState.brushType, customStrokes]);
-
-  useEffect(() => {
-    const socket = initializeSocket();
-    const userId = localStorage.getItem('userId');
-
-    const handleConnect = () => {
-      console.log('Connected to server');
-      setIsConnecting(false);
-      if (isLive && userId) {
-        socket.emit('startLive', userId);
-        handleStroke(); // Send current canvas state
-      }
-    };
-
-    const handleDisconnect = () => {
-      console.log('Disconnected from server');
-      setIsLive(false);
-      setIsConnecting(true);
-    };
-
-    const handleLiveError = (data: { message: string }) => {
-      setError(data.message);
-      setShowStartModal(false);
-      setIsLive(false);
-      if (canvasRef.current) {
-        canvasRef.current.clearCanvas();
-      }
-    };
-
-    socket.on('connect', handleConnect);
-    socket.on('disconnect', handleDisconnect);
-    socket.on('liveError', handleLiveError);
-
-    return () => {
-      socket.off('connect', handleConnect);
-      socket.off('disconnect', handleDisconnect);
-      socket.off('liveError', handleLiveError);
-      if (userId && isLive) {
-        socket.emit('stopLive', userId);
-      }
-    };
-  }, [isLive, handleStroke]);
-
+  // 7. Define UI control handlers
   const handleStartLive = () => {
     setError(null);
     setShowStartModal(true);
@@ -365,36 +305,31 @@ const TeacherWhiteboard: React.FC = () => {
 
   const confirmStartLive = async () => {
     const userId = localStorage.getItem('userId');
-    const socket = initializeSocket();
 
-    if (userId && canvasRef.current) {
+    if (userId && canvasRef.current && socketRef.current) {
       setIsLive(true);
       setShowStartModal(false);
-      socket.emit('startLive', userId);
+
+      // Signal live session start
+      socketRef.current.emit('startLive', userId);
 
       // Send initial canvas state
-      const paths = await canvasRef.current.exportPaths();
-      socket.emit('whiteboardUpdate', {
-        teacherId: userId,
-        whiteboardData: JSON.stringify({
-          brushType: drawingState.brushType,
-          strokes: paths
-        })
-      });
+      sendWhiteboardUpdate();
     }
   };
 
   const confirmStopLive = () => {
     const userId = localStorage.getItem('userId');
-    const socket = initializeSocket();
 
-    if (userId) {
+    if (userId && socketRef.current) {
+      socketRef.current.emit('stopLive', userId);
       setIsLive(false);
       setShowStopModal(false);
-      socket.emit('stopLive', userId);
+
       if (canvasRef.current) {
         canvasRef.current.clearCanvas();
       }
+
       // Reset history and custom canvas
       setStrokeHistory([]);
       setRedoStack([]);
@@ -412,8 +347,6 @@ const TeacherWhiteboard: React.FC = () => {
   const handleClearCanvas = async () => {
     if (canvasRef.current && isLive) {
       await canvasRef.current.clearCanvas();
-      const userId = localStorage.getItem('userId');
-      const socket = initializeSocket();
 
       // Clear custom canvas if it exists
       if (customCanvasRef.current) {
@@ -425,19 +358,12 @@ const TeacherWhiteboard: React.FC = () => {
 
       setCustomStrokes([]);
 
-      if (userId) {
-        socket.emit('whiteboardUpdate', {
-          teacherId: userId,
-          whiteboardData: JSON.stringify({
-            brushType: drawingState.brushType,
-            strokes: []
-          })
-        });
-      }
-
       // Reset history
       setStrokeHistory([]);
       setRedoStack([]);
+
+      // Send empty canvas to students
+      sendWhiteboardUpdate();
     }
   };
 
@@ -449,18 +375,6 @@ const TeacherWhiteboard: React.FC = () => {
       setOpenDropdown(menu);
     }
   };
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = () => {
-      setOpenDropdown(null);
-    };
-
-    document.addEventListener('click', handleClickOutside);
-    return () => {
-      document.removeEventListener('click', handleClickOutside);
-    };
-  }, []);
 
   // Handle color change
   const handleColorChange = (color: string) => {
@@ -506,6 +420,13 @@ const TeacherWhiteboard: React.FC = () => {
       isEraser: false
     }));
 
+    // Notify students of brush change without affecting live status
+    if (isLive) {
+      setTimeout(() => {
+        sendWhiteboardUpdate();
+      }, 100);
+    }
+
     setOpenDropdown(null);
   };
 
@@ -537,17 +458,7 @@ const TeacherWhiteboard: React.FC = () => {
       }
 
       // Send updated canvas state
-      const paths = await canvasRef.current.exportPaths();
-      const userId = localStorage.getItem('userId');
-      if (userId && socket) {
-        socket.emit('whiteboardUpdate', {
-          teacherId: userId,
-          whiteboardData: JSON.stringify({
-            brushType: drawingState.brushType,
-            strokes: drawingState.brushType === 'triangle' ? [] : paths
-          })
-        });
-      }
+      sendWhiteboardUpdate();
     }
   };
 
@@ -563,17 +474,7 @@ const TeacherWhiteboard: React.FC = () => {
       setStrokeHistory(prev => [...prev, pathToRestore]);
 
       // Send updated canvas state
-      const paths = await canvasRef.current.exportPaths();
-      const userId = localStorage.getItem('userId');
-      if (userId && socket) {
-        socket.emit('whiteboardUpdate', {
-          teacherId: userId,
-          whiteboardData: JSON.stringify({
-            brushType: drawingState.brushType,
-            strokes: drawingState.brushType === 'triangle' ? [] : paths
-          })
-        });
-      }
+      sendWhiteboardUpdate();
     }
   };
 
@@ -589,6 +490,113 @@ const TeacherWhiteboard: React.FC = () => {
     const IconComponent = brush.icon;
     return <IconComponent size={16} />;
   };
+
+  // Initialize socket once on component mount and store in ref
+  useEffect(() => {
+    socketRef.current = initializeSocket();
+
+    // Setup socket event handlers
+    const socket = socketRef.current;
+    const userId = localStorage.getItem('userId');
+
+    const handleConnect = () => {
+      console.log('Connected to server');
+      setIsConnecting(false);
+      if (isLive && userId) {
+        socket.emit('startLive', userId);
+        sendWhiteboardUpdate(); // Send current canvas state
+      }
+    };
+
+    const handleDisconnect = () => {
+      console.log('Disconnected from server');
+      setIsConnecting(true);
+    };
+
+    const handleLiveError = (data: { message: string }) => {
+      setError(data.message);
+      setShowStartModal(false);
+      setIsLive(false);
+      if (canvasRef.current) {
+        canvasRef.current.clearCanvas();
+      }
+    };
+
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
+    socket.on('liveError', handleLiveError);
+
+    return () => {
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
+      socket.off('liveError', handleLiveError);
+
+      if (userId && isLive) {
+        socket.emit('stopLive', userId);
+      }
+    };
+  }, []);
+
+  // Update isLive state effect - separate from the socket setup
+  useEffect(() => {
+    if (!socketRef.current) return;
+
+    const userId = localStorage.getItem('userId');
+    if (isLive && userId) {
+      socketRef.current.emit('startLive', userId);
+      sendWhiteboardUpdate();
+    }
+  }, [isLive, sendWhiteboardUpdate]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      const container = document.getElementById('whiteboard-container');
+      if (container) {
+        const width = container.clientWidth;
+        const height = Math.min(window.innerHeight - 200, width * 0.75);
+        setCanvasSize({ width, height });
+      }
+    };
+
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Setup custom canvas when using triangle brush
+  useEffect(() => {
+    if (drawingState.brushType === 'triangle') {
+      if (!customCanvasRef.current && canvasContainerRef.current) {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvasSize.width;
+        canvas.height = canvasSize.height;
+        canvas.style.position = 'absolute';
+        canvas.style.top = '0';
+        canvas.style.left = '0';
+        canvas.style.pointerEvents = 'none';
+        canvas.style.zIndex = '10';
+        customCanvasRef.current = canvas;
+        canvasContainerRef.current.appendChild(canvas);
+      }
+    } else {
+      if (customCanvasRef.current && canvasContainerRef.current) {
+        canvasContainerRef.current.removeChild(customCanvasRef.current);
+        customCanvasRef.current = null;
+      }
+    }
+  }, [drawingState.brushType, canvasSize]);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = () => {
+      setOpenDropdown(null);
+    };
+
+    document.addEventListener('click', handleClickOutside);
+    return () => {
+      document.removeEventListener('click', handleClickOutside);
+    };
+  }, []);
 
   return (
     <>
@@ -793,8 +801,7 @@ const TeacherWhiteboard: React.FC = () => {
                         key={brush.value}
                         onClick={() => handleBrushTypeChange(brush.value)}
                         className={`flex items-center justify-between px-3 py-2 rounded hover:bg-gray-100 ${
-                          drawingState.brushType === brush.value ? 'bg-gray-100' : ''
-                        }`}
+                          drawingState.brushType === brush.value ? 'bg-gray-100' : ''}`}
                       >
                         <div className="flex items-center gap-2">
                           {brush.value === 'triangle' ? (
