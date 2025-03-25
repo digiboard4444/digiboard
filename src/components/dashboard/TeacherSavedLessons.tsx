@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { format } from 'date-fns';
 import { Trash2, Video, Loader2, Users } from 'lucide-react';
 import Layout from '../layout/Layout';
-import SavedLessonPlayer from '../savedlessons/SavedLessonPlayer';
+import SavedLessonPlayer from '../SavedLessons/SavedLessonPlayer';
 
 interface Session {
   _id: string;
