@@ -139,16 +139,6 @@ const TeacherWhiteboard: React.FC = () => {
   const [isConnecting, setIsConnecting] = useState(false);
   const [isAudioRecording, setIsAudioRecording] = useState(false);
 
-  const handleStartLive = () => {
-    setError(null);
-    setShowStartModal(true);
-  };
-
-  // Handler for the "Stop Live" button
-  const handleStopLive = () => {
-    setShowStopModal(true);
-  };
-
   // Drawing state
   const [drawingState, setDrawingState] = useState<DrawingState>({
     color: COLORS[0].value,
@@ -164,6 +154,59 @@ const TeacherWhiteboard: React.FC = () => {
   // Custom stroke history for undo/redo
   const [strokeHistory, setStrokeHistory] = useState<any[]>([]);
   const [redoStack, setRedoStack] = useState<any[]>([]);
+
+  // Handler for the "Start Live" button
+  const handleStartLive = () => {
+    setError(null);
+    setShowStartModal(true);
+  };
+
+  // Handler for the "Stop Live" button
+  const handleStopLive = () => {
+    setShowStopModal(true);
+  };
+
+  // Start audio recording function
+  const startAudioRecording = () => {
+    if (!audioRecorderRef.current) {
+      audioRecorderRef.current = new AudioRecorder();
+    }
+
+    console.log('Initializing audio recording...');
+
+    try {
+      audioRecorderRef.current.startRecording()
+        .then(() => {
+          setIsAudioRecording(true);
+          console.log('Audio recording started successfully');
+        })
+        .catch((err) => {
+          console.error('Error in audio recording:', err);
+          // Don't set any error state to avoid disrupting the session
+        });
+    } catch (error) {
+      console.error('Error initiating audio recording:', error);
+      // Don't propagate the error
+    }
+  };
+
+  // Stop audio recording function
+  const stopAudioRecording = async (): Promise<Blob | null> => {
+    if (!audioRecorderRef.current) {
+      return null;
+    }
+
+    try {
+      const audioBlob = await audioRecorderRef.current.stopRecording();
+      setIsAudioRecording(false);
+      console.log('Stopped audio recording, blob size:', audioBlob.size);
+      return audioBlob;
+    } catch (error) {
+      console.error('Error stopping audio recording:', error);
+      setIsAudioRecording(false);
+      return null;
+    }
+  };
 
   useEffect(() => {
     const handleResize = () => {
@@ -247,30 +290,65 @@ const TeacherWhiteboard: React.FC = () => {
     }
   }, [drawingState]);
 
-  // Start audio recording - Non-blocking implementation
-  const startAudioRecording = () => {
-    if (!audioRecorderRef.current) {
-      audioRecorderRef.current = new AudioRecorder();
-    }
+  useEffect(() => {
+    const socket = initializeSocket();
+    const userId = localStorage.getItem('userId');
 
-    // Avoid using setTimeout and use a more direct approach
-    try {
-      audioRecorderRef.current.startRecording()
-        .then(() => {
-          setIsAudioRecording(true);
-          console.log('Audio recording started successfully');
-        })
-        .catch((err) => {
-          console.error('Error in audio recording:', err);
-          // Don't set any error state to avoid disrupting the session
-        });
-    } catch (error) {
-      console.error('Error initiating audio recording:', error);
-      // Don't propagate the error
-    }
-  };
+    const handleConnect = () => {
+      console.log('Connected to server');
+      setIsConnecting(false);
+      if (isLive && userId) {
+        socket.emit('startLive', userId);
+        handleStroke(); // Send current canvas state
+      }
+    };
 
-  // Updated confirmation for starting live session
+    const handleDisconnect = () => {
+      console.log('Disconnected from server');
+      setIsLive(false);
+      setIsConnecting(true);
+
+      // Stop audio recording if active
+      if (isAudioRecording) {
+        stopAudioRecording().catch(console.error);
+      }
+    };
+
+    const handleLiveError = (data: { message: string }) => {
+      setError(data.message);
+      setShowStartModal(false);
+      setIsLive(false);
+
+      // Stop audio recording if active
+      if (isAudioRecording) {
+        stopAudioRecording().catch(console.error);
+      }
+
+      if (canvasRef.current) {
+        canvasRef.current.clearCanvas();
+      }
+    };
+
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
+    socket.on('liveError', handleLiveError);
+
+    return () => {
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
+      socket.off('liveError', handleLiveError);
+
+      // Clean up audio recording
+      if (isAudioRecording) {
+        stopAudioRecording().catch(console.error);
+      }
+
+      if (userId && isLive) {
+        socket.emit('stopLive', userId);
+      }
+    };
+  }, [isLive, handleStroke, isAudioRecording]);
+
   const confirmStartLive = async () => {
     const userId = localStorage.getItem('userId');
     const socket = initializeSocket();
@@ -298,24 +376,6 @@ const TeacherWhiteboard: React.FC = () => {
     }
   };
 
-  const stopAudioRecording = async (): Promise<Blob | null> => {
-    if (!audioRecorderRef.current) {
-      return null;
-    }
-
-    try {
-      const audioBlob = await audioRecorderRef.current.stopRecording();
-      setIsAudioRecording(false);
-      console.log('Stopped audio recording, blob size:', audioBlob.size);
-      return audioBlob;
-    } catch (error) {
-      console.error('Error stopping audio recording:', error);
-      setIsAudioRecording(false);
-      return null;
-    }
-  };
-
-  // Updated confirmation for stopping live session
   const confirmStopLive = async () => {
     const userId = localStorage.getItem('userId');
     const socket = initializeSocket();

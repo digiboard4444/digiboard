@@ -56,7 +56,7 @@ io.on('connection', (socket) => {
   console.log('A user connected');
   let currentTeacherId = null;
   let isStudent = false;
-  let isAudioActive = false; // NEW: Track audio status separately from live status
+  let isAudioActive = false; // Track audio status separately from live status
 
   // Handle teacher status check
   socket.on('checkTeacherStatus', () => {
@@ -103,7 +103,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // NEW: Handle audio recording status (separate from session status)
+  // NEW: Handle audio toggle events from teacher
   socket.on('toggleAudio', (data) => {
     console.log('Teacher toggled audio:', data.teacherId, data.enabled);
     isAudioActive = data.enabled;

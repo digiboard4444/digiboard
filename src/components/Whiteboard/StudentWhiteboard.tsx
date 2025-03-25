@@ -187,6 +187,7 @@ const StudentWhiteboard: React.FC = () => {
       if (currentTeacherId === data.teacherId) {
         setIsTeacherLive(false);
         setCurrentTeacherId(null);
+        setIsRecording(false);
         sessionStartTimeRef.current = null;
         if (canvasRef.current) {
           canvasRef.current.clearCanvas();
@@ -194,7 +195,6 @@ const StudentWhiteboard: React.FC = () => {
       }
     };
 
-    // Add new handler for audio toggle
     const handleAudioToggle = (data: { teacherId: string, enabled: boolean }) => {
       if (currentTeacherId === data.teacherId) {
         setIsRecording(data.enabled);
@@ -231,7 +231,7 @@ const StudentWhiteboard: React.FC = () => {
     socket.on('teacherOffline', handleTeacherOffline);
     socket.on('sessionEnded', handleSessionEnded);
     socket.on('audioAvailable', handleAudioAvailable);
-    socket.on('audioToggle', handleAudioToggle); // Add the new handler
+    socket.on('audioToggle', handleAudioToggle);
     socket.on('connect', handleConnect);
     socket.on('connect_error', handleConnectError);
     socket.on('disconnect', handleDisconnect);
