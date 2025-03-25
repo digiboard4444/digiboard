@@ -2,10 +2,10 @@ const CLOUDINARY_CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME;
 const CLOUDINARY_UPLOAD_URL = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/upload`;
 const CLOUDINARY_UPLOAD_PRESET = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET;
 
-export const uploadSessionRecording = async (videoBlob: Blob): Promise<string> => {
+export const uploadSessionRecording = async (fileBlob: Blob): Promise<string> => {
   try {
     console.log('Starting Cloudinary upload...');
-    console.log(`Blob size: ${videoBlob.size} bytes, type: ${videoBlob.type}`);
+    console.log(`Blob size: ${fileBlob.size} bytes, type: ${fileBlob.type}`);
 
     // Check if we have valid Cloudinary credentials
     if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_UPLOAD_PRESET) {
@@ -17,20 +17,34 @@ export const uploadSessionRecording = async (videoBlob: Blob): Promise<string> =
     }
 
     const formData = new FormData();
-    formData.append('file', videoBlob);
+    formData.append('file', fileBlob);
     formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
-    formData.append('resource_type', 'video');
-    formData.append('folder', 'session_recordings');
+
+    // Determine if it's an image or video based on the blob type
+    const isImage = fileBlob.type.startsWith('image/');
+    formData.append('resource_type', isImage ? 'image' : 'video');
+
+    // Set the folder based on content type
+    formData.append('folder', isImage ? 'whiteboard_images' : 'session_recordings');
 
     // Add a unique public_id to avoid collisions
     const timestamp = new Date().getTime();
-    const uniqueId = `session_${timestamp}_${Math.floor(Math.random() * 1000)}`;
+    const uniqueId = `${isImage ? 'whiteboard' : 'session'}_${timestamp}_${Math.floor(Math.random() * 1000)}`;
     formData.append('public_id', uniqueId);
 
     // Add a timestamp to avoid caching issues
     formData.append('timestamp', (timestamp / 1000).toString());
 
+    // Add specific parameters for video processing if applicable
+    if (!isImage) {
+      // Set video optimization parameters
+      formData.append('eager', 'sp_auto/quality_auto'); // Smart processing and auto quality
+      formData.append('eager_async', 'true');
+      formData.append('eager_notification_url', window.location.origin || 'https://example.com');
+    }
+
     console.log('Uploading to Cloudinary URL:', CLOUDINARY_UPLOAD_URL);
+    console.log('Resource type:', isImage ? 'image' : 'video');
 
     const response = await fetch(CLOUDINARY_UPLOAD_URL, {
       method: 'POST',

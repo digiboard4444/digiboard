@@ -142,31 +142,43 @@ class CustomStrokeRecorder {
         // Draw all paths to the canvas first
         this.createFrame(paths);
 
-        // Set up canvas stream
-        const stream = this.canvas.captureStream(this.frameRate);
+        // Set up canvas stream with a higher framerate
+        const stream = this.canvas.captureStream(30);
 
-        // Try different mimeTypes based on browser support
-        let mimeType = 'video/webm;codecs=vp9';
-        if (!MediaRecorder.isTypeSupported(mimeType)) {
-          mimeType = 'video/webm;codecs=vp8';
-          if (!MediaRecorder.isTypeSupported(mimeType)) {
-            mimeType = 'video/webm';
-            if (!MediaRecorder.isTypeSupported(mimeType)) {
-              mimeType = '';  // Use browser default
-            }
-          }
+        // Add an audio track (silent) to ensure compatibility
+        // Some systems need audio+video for proper video file creation
+        const audioCtx = new AudioContext();
+        const oscillator = audioCtx.createOscillator();
+        const dst = audioCtx.createMediaStreamDestination();
+        oscillator.connect(dst);
+        oscillator.start();
+
+        // Combine audio and video tracks
+        const audioTrack = dst.stream.getAudioTracks()[0];
+        const fullStream = new MediaStream([...stream.getVideoTracks(), audioTrack]);
+
+        // First try with h264 for maximum compatibility
+        let options = {};
+        if (MediaRecorder.isTypeSupported('video/webm;codecs=h264')) {
+          options = { mimeType: 'video/webm;codecs=h264', videoBitsPerSecond: 2500000 };
+        }
+        else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
+          options = { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 2500000 };
+        }
+        else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8')) {
+          options = { mimeType: 'video/webm;codecs=vp8', videoBitsPerSecond: 2500000 };
+        }
+        else if (MediaRecorder.isTypeSupported('video/webm')) {
+          options = { mimeType: 'video/webm', videoBitsPerSecond: 2500000 };
+        }
+        else if (MediaRecorder.isTypeSupported('video/mp4')) {
+          options = { mimeType: 'video/mp4', videoBitsPerSecond: 2500000 };
         }
 
-        // Use better MediaRecorder options
-        const options = mimeType ? {
-          mimeType,
-          videoBitsPerSecond: 2500000 // 2.5 Mbps
-        } : {};
-
-        console.log('Using MediaRecorder with mimeType:', mimeType || 'browser default');
+        console.log('Using MediaRecorder options:', options);
 
         // Set up media recorder
-        this.mediaRecorder = new MediaRecorder(stream, options);
+        this.mediaRecorder = new MediaRecorder(fullStream, options);
         this.recordedChunks = [];
 
         this.mediaRecorder.ondataavailable = (event) => {
@@ -177,9 +189,21 @@ class CustomStrokeRecorder {
 
         this.mediaRecorder.onstop = () => {
           try {
-            const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
-            console.log(`Recording complete: ${blob.size} bytes`);
-            resolve(blob);
+            // Stop the audio context
+            oscillator.stop();
+            audioCtx.close();
+
+            // Create the video blob
+            const mimeType = (options as any).mimeType || 'video/webm';
+            const blob = new Blob(this.recordedChunks, { type: mimeType });
+            console.log(`Recording complete: ${blob.size} bytes, type: ${blob.type}`);
+
+            // Use a longer recording (5+ seconds) to ensure Cloudinary accepts it
+            if (blob.size > 0) {
+              resolve(blob);
+            } else {
+              reject(new Error('Empty video blob created'));
+            }
           } catch (error) {
             console.error('Error creating blob:', error);
             reject(error);
@@ -188,23 +212,21 @@ class CustomStrokeRecorder {
 
         // Start recording
         this.mediaRecorder.start();
-        this.startTime = Date.now();
 
-        // Record for a bit longer to ensure we get good quality frames
+        // Record for a longer duration (5 seconds) to ensure a valid video file
         setTimeout(() => {
           if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
             this.mediaRecorder.stop();
           } else {
             reject(new Error('MediaRecorder is not active'));
           }
-        }, 3000); // 3 seconds to ensure we have a valid video
+        }, 5000);
       } catch (error) {
         console.error('Error setting up recording:', error);
         reject(error);
       }
     });
   }
-}
 
 // Actual implementation of uploadSessionRecording that uses Cloudinary
 const uploadSessionRecording = async (blob: Blob): Promise<string> => {
