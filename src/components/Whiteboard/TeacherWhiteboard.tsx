@@ -1,9 +1,9 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
-import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown } from 'lucide-react';
+import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown, Minus } from 'lucide-react';
 import { io } from 'socket.io-client';
 import type { TypedSocket } from '../../types/socket';
-import { drawCircleBrush, drawDottedCircleBrush, StrokePoint, BrushOptions } from '../../lib/brushUtils';
+import { drawCircleBrush, drawDottedLineBrush, StrokePoint, BrushOptions } from '../../lib/brushUtils';
 import {
   COLORS,
   STROKE_SIZES,
@@ -125,8 +125,8 @@ const TeacherWhiteboard: React.FC = () => {
     };
 
     switch (drawingState.brushType) {
-      case 'dotted-circle':
-        drawDottedCircleBrush(customCtxRef.current, point, options);
+      case 'dotted-line':
+        drawDottedLineBrush(customCtxRef.current, point, options);
         break;
       case 'circle':
       default:
@@ -283,6 +283,17 @@ const TeacherWhiteboard: React.FC = () => {
           whiteboardData: JSON.stringify(paths)
         });
       }
+    }
+  };
+
+  // Get the appropriate icon based on brush type
+  const getBrushIcon = (brushType: string) => {
+    switch (brushType) {
+      case 'dotted-line':
+        return <Minus size={16} />;
+      case 'circle':
+      default:
+        return <Circle size={16} />;
     }
   };
 
@@ -474,7 +485,7 @@ const TeacherWhiteboard: React.FC = () => {
                 onClick={() => toggleDropdown('brush', openDropdown, setOpenDropdown)}
                 className="flex items-center gap-2 px-3 py-2 rounded hover:bg-gray-100"
               >
-                <Paintbrush size={16} />
+                {getBrushIcon(drawingState.brushType)}
                 <span>Brush</span>
                 <ChevronDown size={16} />
               </button>
@@ -483,7 +494,6 @@ const TeacherWhiteboard: React.FC = () => {
                 <div className="absolute z-10 top-full left-0 mt-1 p-2 bg-white rounded-lg shadow-lg border border-gray-200">
                   <div className="flex flex-col gap-2 w-48">
                     {BRUSH_TYPES.map((brush) => {
-                      // Use Circle for all brush types since they're both circles
                       return (
                         <button
                           key={brush.value}
@@ -493,7 +503,7 @@ const TeacherWhiteboard: React.FC = () => {
                           }`}
                         >
                           <div className="flex items-center gap-2">
-                            <Circle size={16} />
+                            {brush.value === 'dotted-line' ? <Minus size={16} /> : <Circle size={16} />}
                             <span>{brush.name}</span>
                           </div>
                           <span className="text-xs text-gray-500">{brush.description}</span>

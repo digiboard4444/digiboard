@@ -31,9 +31,10 @@ export const drawCircleBrush = (
 };
 
 /**
- * Draws a dotted circle brush at the given point
+ * Draws a dotted line brush at the given point
+ * Creates a pattern that alternates between the selected color and white
  */
-export const drawDottedCircleBrush = (
+export const drawDottedLineBrush = (
   ctx: CanvasRenderingContext2D,
   point: StrokePoint,
   options: BrushOptions
@@ -44,13 +45,17 @@ export const drawDottedCircleBrush = (
   ctx.save();
   ctx.strokeStyle = color;
   ctx.globalAlpha = opacity;
-  ctx.lineWidth = Math.max(1, size / 8);  // Adjust line width based on size
+  ctx.lineWidth = size;  // Use the selected size as line width
 
-  // Create dotted line effect
-  ctx.setLineDash([size / 4, size / 3]);  // Set dot and gap sizes relative to brush size
+  // Create dotted line effect - 2px selected color, 2px white
+  ctx.setLineDash([2, 2]);  // 2px dash, 2px gap
 
+  // Draw a short line segment centered at the point
+  const lineLength = size * 2;
   ctx.beginPath();
-  ctx.arc(x, y, size / 2, 0, Math.PI * 2);
+  ctx.moveTo(x - lineLength/2, y);
+  ctx.lineTo(x + lineLength/2, y);
   ctx.stroke();
+
   ctx.restore();
-};
+}
