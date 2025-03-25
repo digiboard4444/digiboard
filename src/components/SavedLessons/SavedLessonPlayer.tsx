@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Play, Pause, RotateCcw, Loader2 } from 'lucide-react';
 
 interface SavedLessonPlayerProps {
@@ -8,226 +8,216 @@ interface SavedLessonPlayerProps {
 const SavedLessonPlayer: React.FC<SavedLessonPlayerProps> = ({ videoUrl }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isReady, setIsReady] = useState(false);
-  const videoRef = React.useRef<HTMLVideoElement>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [hasError, setHasError] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const playAttemptTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Reset player state when video URL changes
+  // Reset state when video URL changes
   useEffect(() => {
-    let timeoutId: NodeJS.Timeout;
+    console.log("Video URL changed, resetting player state");
+    setIsPlaying(false);
+    setIsReady(false);
+    setIsLoading(true);
+    setHasError(false);
 
-    if (videoRef.current) {
-      // Reset state
-      videoRef.current.pause();
-      setIsPlaying(false);
-      setIsReady(false);
-
-      // For videos that might have CORS issues, add a fallback timeout
-      // But only once per URL change
-      timeoutId = setTimeout(() => {
-        console.log("Video loading timed out, setting ready state manually");
-        setIsReady(true);
-      }, 3000);
+    // Clear any pending timeouts
+    if (playAttemptTimeoutRef.current) {
+      clearTimeout(playAttemptTimeoutRef.current);
+      playAttemptTimeoutRef.current = null;
     }
 
-    // Clean up timeout when component unmounts or URL changes
+    // Automatically set ready state after a timeout as fallback
+    const readyTimeout = setTimeout(() => {
+      console.log("Video loading timed out, setting ready state manually");
+      setIsReady(true);
+      setIsLoading(false);
+    }, 5000);
+
     return () => {
-      if (timeoutId) clearTimeout(timeoutId);
+      clearTimeout(readyTimeout);
+      if (playAttemptTimeoutRef.current) {
+        clearTimeout(playAttemptTimeoutRef.current);
+      }
     };
   }, [videoUrl]);
 
-  // Prevent multiple play attempts at once
-  const isAttemptingPlayRef = useRef(false);
+  // Handle video events
+  const handleCanPlay = () => {
+    console.log("Video can play event fired");
+    setIsReady(true);
+    setIsLoading(false);
+  };
 
-  const handlePlayPause = useCallback(() => {
-    if (!videoRef.current || !isReady || isAttemptingPlayRef.current) return;
+  const handleLoadedData = () => {
+    console.log("Video loaded data event fired");
+    setIsReady(true);
+    setIsLoading(false);
+  };
+
+  const handleError = () => {
+    console.error("Video error event fired");
+    if (videoRef.current?.error) {
+      console.error("Video error code:", videoRef.current.error.code);
+    }
+    setHasError(true);
+    setIsLoading(false);
+
+    // Still set ready so user can try manual play
+    setIsReady(true);
+  };
+
+  const handleVideoEnd = () => {
+    console.log("Video ended");
+    setIsPlaying(false);
+  };
+
+  // Play/pause handling
+  const handlePlayPause = () => {
+    if (!videoRef.current || !isReady) return;
 
     if (isPlaying) {
+      console.log("Pausing video");
       videoRef.current.pause();
       setIsPlaying(false);
     } else {
-      isAttemptingPlayRef.current = true;
+      console.log("Attempting to play video");
 
-      // Wrap in try/catch to handle potential play() failures
-      try {
-        console.log("Attempting to play video");
+      // If there's an error, try reloading first
+      if (hasError || videoRef.current.error) {
+        console.log("Video had error, reloading before play");
+        videoRef.current.load();
 
-        // Force a reload if the video has failed previously
-        if (videoRef.current.error) {
-          console.log("Video has error, reloading before play");
-          videoRef.current.load();
+        // Add a delay before trying to play
+        if (playAttemptTimeoutRef.current) {
+          clearTimeout(playAttemptTimeoutRef.current);
+        }
 
-          setTimeout(() => {
-            if (!videoRef.current) {
-              isAttemptingPlayRef.current = false;
-              return;
-            }
+        playAttemptTimeoutRef.current = setTimeout(() => {
+          if (!videoRef.current) return;
 
-            console.log("Playing after reload");
+          console.log("Playing after reload");
+          try {
             const playPromise = videoRef.current.play();
-
-            if (playPromise !== undefined) {
+            if (playPromise) {
               playPromise
                 .then(() => {
+                  console.log("Play successful after reload");
                   setIsPlaying(true);
-                  isAttemptingPlayRef.current = false;
+                  setHasError(false);
                 })
-                .catch(error => {
-                  console.error("Error playing video after reload:", error);
-                  setIsPlaying(false);
-                  isAttemptingPlayRef.current = false;
+                .catch((err) => {
+                  console.error("Play failed after reload:", err);
+                  // One more attempt with muted (autoplay restrictions workaround)
+                  if (err.name === "NotAllowedError") {
+                    console.log("Trying muted playback");
+                    videoRef.current!.muted = true;
+                    videoRef.current!.play()
+                      .then(() => {
+                        console.log("Muted play successful");
+                        setIsPlaying(true);
+                        // Immediately unmute
+                        setTimeout(() => {
+                          if (videoRef.current) videoRef.current.muted = false;
+                        }, 100);
+                      })
+                      .catch(e => console.error("Even muted play failed:", e));
+                  }
                 });
-            } else {
-              isAttemptingPlayRef.current = false;
             }
-          }, 500);
-          return;
-        }
+          } catch (e) {
+            console.error("Error during play attempt:", e);
+          }
+        }, 1000);
 
-        // Normal play attempt
+        return;
+      }
+
+      // Normal play attempt
+      try {
         const playPromise = videoRef.current.play();
-
-        if (playPromise !== undefined) {
+        if (playPromise) {
           playPromise
             .then(() => {
-              console.log("Video playback started successfully");
+              console.log("Play successful");
               setIsPlaying(true);
-              isAttemptingPlayRef.current = false;
             })
-            .catch(error => {
-              console.error("Error playing video:", error);
-              setIsPlaying(false);
+            .catch((err) => {
+              console.error("Play failed:", err);
 
-              // If AbortError, try reloading the video and playing again
-              if (error.name === 'AbortError') {
-                console.log("Handling AbortError by reloading video");
-                if (videoRef.current) {
-                  videoRef.current.load();
-                  setTimeout(() => {
-                    if (videoRef.current) {
-                      console.log("Playing after AbortError");
-                      videoRef.current.play()
-                        .then(() => {
-                          setIsPlaying(true);
-                          isAttemptingPlayRef.current = false;
-                        })
-                        .catch(e => {
-                          console.error("Failed to play after reload:", e);
-                          isAttemptingPlayRef.current = false;
-                        });
-                    } else {
-                      isAttemptingPlayRef.current = false;
-                    }
-                  }, 500);
-                } else {
-                  isAttemptingPlayRef.current = false;
+              // Handle AbortError specifically
+              if (err.name === "AbortError") {
+                console.log("Handling AbortError");
+                videoRef.current!.load();
+
+                if (playAttemptTimeoutRef.current) {
+                  clearTimeout(playAttemptTimeoutRef.current);
                 }
-              } else {
-                isAttemptingPlayRef.current = false;
+
+                playAttemptTimeoutRef.current = setTimeout(() => {
+                  console.log("Retrying play after AbortError");
+                  if (videoRef.current) {
+                    videoRef.current.play()
+                      .then(() => {
+                        console.log("Play successful after AbortError handling");
+                        setIsPlaying(true);
+                      })
+                      .catch(e => console.error("Play failed after AbortError handling:", e));
+                  }
+                }, 1000);
+              }
+
+              // Try muted playback for autoplay restrictions
+              if (err.name === "NotAllowedError") {
+                console.log("Trying muted playback");
+                videoRef.current!.muted = true;
+                videoRef.current!.play()
+                  .then(() => {
+                    console.log("Muted play successful");
+                    setIsPlaying(true);
+                    // Immediately unmute
+                    setTimeout(() => {
+                      if (videoRef.current) videoRef.current.muted = false;
+                    }, 100);
+                  })
+                  .catch(e => console.error("Even muted play failed:", e));
               }
             });
-        } else {
-          isAttemptingPlayRef.current = false;
         }
-      } catch (error) {
-        console.error("Error playing video:", error);
-        setIsPlaying(false);
-        isAttemptingPlayRef.current = false;
+      } catch (e) {
+        console.error("Error during play attempt:", e);
       }
     }
-  }, [isPlaying, isReady]);
+  };
 
-  const handleRestart = useCallback(() => {
+  // Handle restart
+  const handleRestart = () => {
     if (!videoRef.current || !isReady) return;
 
-    // Pause first to avoid race conditions
+    console.log("Restarting video");
     videoRef.current.pause();
     videoRef.current.currentTime = 0;
 
-    // Short timeout to allow the browser to process the seek operation
     setTimeout(() => {
       if (!videoRef.current) return;
 
       try {
         const playPromise = videoRef.current.play();
-
-        if (playPromise !== undefined) {
+        if (playPromise) {
           playPromise
-            .then(() => setIsPlaying(true))
-            .catch(error => {
-              console.error("Error playing video after restart:", error);
-              setIsPlaying(false);
-
-              // If AbortError, try reloading the video and playing again
-              if (error.name === 'AbortError') {
-                console.log("Handling AbortError by reloading video");
-                if (videoRef.current) {
-                  videoRef.current.load();
-                  setTimeout(() => {
-                    if (videoRef.current) {
-                      videoRef.current.currentTime = 0;
-                      videoRef.current.play()
-                        .then(() => setIsPlaying(true))
-                        .catch(e => console.error("Failed to play after reload:", e));
-                    }
-                  }, 500);
-                }
-              }
+            .then(() => {
+              console.log("Restart play successful");
+              setIsPlaying(true);
+            })
+            .catch(err => {
+              console.error("Restart play failed:", err);
             });
         }
-
-        setIsPlaying(true);
-      } catch (error) {
-        console.error("Error restarting video:", error);
-        setIsPlaying(false);
+      } catch (e) {
+        console.error("Error during restart play attempt:", e);
       }
-    }, 50);
-  }, [isReady]);
-
-  const handleVideoEnd = () => {
-    setIsPlaying(false);
+    }, 100);
   };
-
-  // Use a ref to track if canPlay has fired already
-  const canPlayFiredRef = useRef(false);
-
-  const handleCanPlay = useCallback(() => {
-    console.log("Video can play now");
-    canPlayFiredRef.current = true;
-    setIsReady(true);
-  }, []);
-
-  const handleError = useCallback((e: React.SyntheticEvent<HTMLVideoElement, Event>) => {
-    const videoElement = e.target as HTMLVideoElement;
-    console.error("Video error:", videoElement.error);
-
-    setIsPlaying(false);
-
-    // If canPlay event never fired, set to not ready
-    if (!canPlayFiredRef.current) {
-      setIsReady(false);
-    }
-
-    // Try to recover from media errors
-    if (videoElement.error) {
-      console.log(`Media error code: ${videoElement.error.code}, trying to recover...`);
-
-      // Force reload for network errors
-      if (videoElement.error.code === MediaError.MEDIA_ERR_NETWORK ||
-          videoElement.error.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) {
-
-        // Try to reload the video after a short delay
-        setTimeout(() => {
-          if (videoRef.current) {
-            videoRef.current.load();
-            // Force ready state after reload to allow UI interaction
-            setTimeout(() => setIsReady(true), 1000);
-          }
-        }, 500);
-      } else {
-        // For other errors, just enable the UI
-        setTimeout(() => setIsReady(true), 1000);
-      }
-    }
-  }, []);
 
   return (
     <div className="p-4">
@@ -236,11 +226,20 @@ const SavedLessonPlayer: React.FC<SavedLessonPlayerProps> = ({ videoUrl }) => {
       </div>
       <div className="border rounded-lg overflow-hidden bg-white">
         <div className="aspect-video w-full relative group">
-          {!isReady && (
+          {isLoading && (
             <div className="absolute inset-0 flex items-center justify-center bg-gray-100">
               <div className="flex flex-col items-center text-gray-500">
                 <Loader2 className="w-10 h-10 mb-2 animate-spin text-indigo-600" />
                 <div>Loading video...</div>
+              </div>
+            </div>
+          )}
+
+          {hasError && !isLoading && (
+            <div className="absolute inset-0 flex items-center justify-center bg-gray-100 bg-opacity-70">
+              <div className="text-center text-red-600 p-4">
+                <p className="font-semibold mb-2">Error loading video</p>
+                <p className="text-sm">Click play to try again</p>
               </div>
             </div>
           )}
@@ -250,32 +249,32 @@ const SavedLessonPlayer: React.FC<SavedLessonPlayerProps> = ({ videoUrl }) => {
             className="w-full h-full object-contain bg-gray-50"
             src={videoUrl}
             playsInline
-            onLoadedData={handleCanPlay}
-            onCanPlay={handleCanPlay}
-            onEnded={handleVideoEnd}
-            onError={handleError}
             preload="auto"
+            onCanPlay={handleCanPlay}
+            onLoadedData={handleLoadedData}
+            onError={handleError}
+            onEnded={handleVideoEnd}
             crossOrigin="anonymous"
           >
             Your browser does not support the video tag.
           </video>
 
-          {/* Video Controls - Always visible for better UX */}
-          <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/50 to-transparent transition-opacity">
+          {/* Video Controls - always visible */}
+          <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/50 to-transparent">
             <div className="flex items-center justify-center gap-4">
               <button
                 onClick={handlePlayPause}
-                className={`p-2 rounded-full bg-white/90 hover:bg-white text-gray-900 transition-colors ${!isReady ? 'opacity-50' : ''}`}
+                className="p-2 rounded-full bg-white/90 hover:bg-white text-gray-900 transition-colors"
                 title={isPlaying ? "Pause" : "Play"}
-                disabled={!isReady}
+                disabled={isLoading && !isReady}
               >
                 {isPlaying ? <Pause size={20} /> : <Play size={20} />}
               </button>
               <button
                 onClick={handleRestart}
-                className={`p-2 rounded-full bg-white/90 hover:bg-white text-gray-900 transition-colors ${!isReady ? 'opacity-50' : ''}`}
+                className="p-2 rounded-full bg-white/90 hover:bg-white text-gray-900 transition-colors"
                 title="Restart"
-                disabled={!isReady}
+                disabled={isLoading && !isReady}
               >
                 <RotateCcw size={20} />
               </button>
