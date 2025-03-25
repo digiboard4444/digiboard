@@ -429,27 +429,13 @@ const TeacherWhiteboard: React.FC = () => {
     }));
   };
 
-  // Custom renderer for SVG paths with per-path opacity
-  const CustomPathRenderer = ({ paths }: { paths: any[] }) => {
-    return (
-      <svg
-        width={canvasSize.width}
-        height={canvasSize.height}
-        className="absolute top-0 left-0 pointer-events-none"
-      >
-        {pathsRef.current.map((path, index) => (
-          <path
-            key={index}
-            d={/* path data would go here */}
-            stroke={path.strokeColor}
-            strokeWidth={path.strokeWidth}
-            fill="none"
-            strokeLinecap="round"
-            strokeOpacity={path.opacity}
-          />
-        ))}
-      </svg>
-    );
+  // Helper function to manage path rendering (not directly rendered)
+  const renderPathsWithOpacity = () => {
+    if (!canvasRef.current || !pathsRef.current.length) return;
+
+    // This is a placeholder for custom rendering logic
+    // In an actual implementation, we might use a Canvas API approach instead
+    console.log(`Rendering ${pathsRef.current.length} paths with individual opacity`);
   };
 
   return (
@@ -691,10 +677,13 @@ const TeacherWhiteboard: React.FC = () => {
             onChange={handleStroke}
           />
 
-          {/* This is a hidden element that helps us apply opacity per stroke if needed */}
-          <div className="hidden">
-            <CustomPathRenderer paths={pathsRef.current} />
-          </div>
+          {/* Hidden canvas for custom rendering if needed */}
+          <canvas
+            ref={customCanvasRef}
+            className="hidden"
+            width={canvasSize.width}
+            height={canvasSize.height}
+          />
         </div>
       </div>
 
