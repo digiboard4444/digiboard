@@ -1,5 +1,4 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
 import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown } from 'lucide-react';
 import { io } from 'socket.io-client';
 import type { TypedSocket } from '../../types/socket';
@@ -61,6 +60,15 @@ interface DrawingState {
   opacity: number;
   brushType: string;
   isEraser: boolean;
+}
+
+// Interface for CustomCanvasRef
+interface CustomCanvasRef {
+  clearCanvas: () => void;
+  exportPaths: () => any[];
+  undo: () => void;
+  redo: () => void;
+  getPaths: () => any[];
 }
 
 // This is our custom canvas component that supports dotted brush
@@ -361,15 +369,6 @@ const CustomCanvas = React.forwardRef((props: any, ref: any) => {
   );
 });
 
-// Interface for CustomCanvasRef
-interface CustomCanvasRef {
-  clearCanvas: () => void;
-  exportPaths: () => any[];
-  undo: () => void;
-  redo: () => void;
-  getPaths: () => any[];
-}
-
 const TeacherWhiteboard: React.FC = () => {
   const canvasRef = useRef<CustomCanvasRef | null>(null);
 
@@ -593,7 +592,8 @@ const TeacherWhiteboard: React.FC = () => {
   const handleBrushTypeChange = (type: string) => {
     setDrawingState(prev => ({
       ...prev,
-      brushType: type
+      brushType: type,
+      isEraser: false
     }));
     setOpenDropdown(null);
   };
@@ -802,7 +802,7 @@ const TeacherWhiteboard: React.FC = () => {
               )}
             </div>
 
-            {/* Brush Type Selector - Simplified to just 2 options */}
+            {/* Brush Type Selector - Just 2 options: Circle and Dotted Circle */}
             <div className="relative" onClick={(e) => e.stopPropagation()}>
               <button
                 onClick={() => toggleDropdown('brush')}
@@ -816,24 +816,21 @@ const TeacherWhiteboard: React.FC = () => {
               {openDropdown === 'brush' && (
                 <div className="absolute z-10 top-full left-0 mt-1 p-2 bg-white rounded-lg shadow-lg border border-gray-200">
                   <div className="flex flex-col gap-2 w-48">
-                    {BRUSH_TYPES.map((brush) => {
-                      const IconComponent = brush.icon;
-                      return (
-                        <button
-                          key={brush.value}
-                          onClick={() => handleBrushTypeChange(brush.value)}
-                          className={`flex items-center justify-between px-3 py-2 rounded hover:bg-gray-100 ${
-                            drawingState.brushType === brush.value ? 'bg-gray-100' : ''
-                          }`}
-                        >
-                          <div className="flex items-center gap-2">
-                            <IconComponent size={16} />
-                            <span>{brush.name}</span>
-                          </div>
-                          <span className="text-xs text-gray-500">{brush.description}</span>
-                        </button>
-                      );
-                    })}
+                    {BRUSH_TYPES.map((brush) => (
+                      <button
+                        key={brush.value}
+                        onClick={() => handleBrushTypeChange(brush.value)}
+                        className={`flex items-center justify-between px-3 py-2 rounded hover:bg-gray-100 ${
+                          drawingState.brushType === brush.value ? 'bg-gray-100' : ''
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <Circle size={16} />
+                          <span>{brush.name}</span>
+                        </div>
+                        <span className="text-xs text-gray-500">{brush.description}</span>
+                      </button>
+                    ))}
                   </div>
                 </div>
               )}
@@ -842,23 +839,21 @@ const TeacherWhiteboard: React.FC = () => {
         )}
 
         <div id="whiteboard-container" className="border rounded-lg overflow-hidden bg-white">
-          <ReactSketchCanvas
+          <CustomCanvas
             ref={canvasRef}
             strokeWidth={drawingState.strokeWidth}
-            strokeColor={drawingState.isEraser ? "#FFFFFF" : drawingState.color}
-            canvasColor="white"
-            width={`${canvasSize.width}px`}
-            height={`${canvasSize.height}px`}
-            exportWithBackgroundImage={false}
-            withTimestamp={false}
-            allowOnlyPointerType="all"
-            lineCap="round"
+            strokeColor={drawingState.color}
+            brushType={drawingState.brushType}
+            opacity={drawingState.opacity}
+            isEraser={drawingState.isEraser}
+            width={canvasSize.width}
+            height={canvasSize.height}
             style={{
-              opacity: drawingState.opacity,
+              width: '100%',
+              height: '100%',
+              background: 'white',
             }}
-            className="touch-none"
             onStroke={handleStroke}
-            onChange={handleStroke}
           />
         </div>
       </div>
