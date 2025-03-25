@@ -142,7 +142,22 @@ class CustomStrokeRecorder {
         const stream = this.canvas.captureStream(this.frameRate);
 
         // Set up media recorder
-        this.mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+        const options = {
+          mimeType: 'video/webm;codecs=vp9',
+          videoBitsPerSecond: 2500000 // Increase bitrate for better quality
+        };
+
+        // Try to create with vp9 first, fallback to other formats if not supported
+        try {
+          this.mediaRecorder = new MediaRecorder(stream, options);
+        } catch (e) {
+          try {
+            this.mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
+          } catch (e) {
+            this.mediaRecorder = new MediaRecorder(stream);
+          }
+        }
+
         this.recordedChunks = [];
 
         this.mediaRecorder.ondataavailable = (event) => {
@@ -160,19 +175,19 @@ class CustomStrokeRecorder {
         this.mediaRecorder.start();
         this.startTime = Date.now();
 
-        // Create each frame with a delay to simulate the drawing
-        // Just draw all paths for simplified recording
+        // Create the frame with all paths - this ensures content is visible in the recording
         this.createFrame(paths, 0);
 
-        // Stop recording after a short delay to ensure the frame is captured
+        // Keep recording for a few seconds to ensure the content is captured
         setTimeout(() => {
           if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
             this.mediaRecorder.stop();
           } else {
             reject(new Error('MediaRecorder is not active'));
           }
-        }, 2000); // Record for 2 seconds to ensure we have a valid video
+        }, 3000); // Record for 3 seconds to ensure a valid video
       } catch (error) {
+        console.error("Error in recordStrokes:", error);
         reject(error);
       }
     });
@@ -196,6 +211,7 @@ const StudentWhiteboard: React.FC = () => {
   const [currentTeacherId, setCurrentTeacherId] = useState<string | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
   const lastUpdateRef = useRef<string>('[]');
+  const pathsRef = useRef<any[]>([]);  // NEW: Store actual paths object for better recording
   const sessionStartTimeRef = useRef<Date | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -205,6 +221,17 @@ const StudentWhiteboard: React.FC = () => {
 
     try {
       lastUpdateRef.current = data.whiteboardData;
+
+      // Parse and store the actual paths object for recording
+      try {
+        const paths = JSON.parse(data.whiteboardData);
+        if (Array.isArray(paths)) {
+          pathsRef.current = paths;
+        }
+      } catch (e) {
+        console.error('Error parsing paths data:', e);
+      }
+
       renderCanvas();
     } catch (error) {
       console.error('Error updating whiteboard:', error);
@@ -311,27 +338,24 @@ const StudentWhiteboard: React.FC = () => {
   }, []);
 
   const saveSession = useCallback(async () => {
-    if (!currentTeacherId || !lastUpdateRef.current || isSaving || lastUpdateRef.current === '[]') {
+    if (!currentTeacherId || !lastUpdateRef.current || isSaving) {
       console.log('No session data to save or already saving');
+      return;
+    }
+
+    // Skip saving if there's no drawing data
+    if (lastUpdateRef.current === '[]' || pathsRef.current.length === 0) {
+      console.log('No drawing data to save');
       return;
     }
 
     setIsSaving(true);
     try {
       console.log('Creating video from strokes...');
-      let paths;
-      try {
-        paths = JSON.parse(lastUpdateRef.current);
-        if (!Array.isArray(paths)) {
-          throw new Error('Invalid paths data');
-        }
-      } catch (error) {
-        console.error('Error parsing paths data:', error);
-        throw new Error('Invalid paths data');
-      }
+      console.log('Paths data:', pathsRef.current);
 
       const recorder = new CustomStrokeRecorder(canvasSize.width, canvasSize.height);
-      const videoBlob = await recorder.recordStrokes(paths);
+      const videoBlob = await recorder.recordStrokes(pathsRef.current);
 
       console.log('Uploading video to Cloudinary...');
       const videoUrl = await uploadSessionRecording(videoBlob);
@@ -402,6 +426,7 @@ const StudentWhiteboard: React.FC = () => {
       sessionStartTimeRef.current = null;
       // Clear canvas
       lastUpdateRef.current = '[]';
+      pathsRef.current = [];
       renderCanvas();
     };
 
