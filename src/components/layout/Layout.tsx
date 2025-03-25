@@ -1,3 +1,4 @@
+// src/components/layout/Layout.tsx
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
@@ -38,6 +39,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           icon: LayoutDashboard,
           label: 'Dashboard',
           path: '/teacher/dashboard',
+        },
+        {
+          icon: BookOpen,
+          label: 'Saved Lessons',
+          path: '/teacher/saved-lessons',
         },
       ];
 

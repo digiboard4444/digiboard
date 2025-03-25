@@ -1,3 +1,4 @@
+// src/App.tsx
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
@@ -7,6 +8,7 @@ import TeacherDashboard from './components/dashboard/TeacherDashboard';
 import StudentDashboard from './components/dashboard/StudentDashboard';
 import LiveWhiteboard from './components/dashboard/LiveWhiteboard';
 import SavedLessons from './components/dashboard/SavedLessons';
+import TeacherSavedLessons from './components/dashboard/TeacherSavedLessons';
 import PrivateRoute from './components/auth/PrivateRoute';
 
 function App() {
@@ -17,12 +19,13 @@ function App() {
           <Route path="/" element={<Navigate to="/login" replace />} />
           <Route path="/login" element={<LoginForm />} />
           <Route path="/register" element={<RegisterForm />} />
-          
+
           {/* Teacher Routes */}
           <Route path="/teacher/*" element={
             <PrivateRoute role="teacher">
               <Routes>
                 <Route path="dashboard" element={<TeacherDashboard />} />
+                <Route path="saved-lessons" element={<TeacherSavedLessons />} />
               </Routes>
             </PrivateRoute>
           } />
