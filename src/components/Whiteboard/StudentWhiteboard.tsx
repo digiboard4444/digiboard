@@ -2,6 +2,7 @@ import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { WhiteboardUpdate, TeacherStatus } from '../../types/socket';
 import { Loader2, AlertCircle } from 'lucide-react';
+import { uploadSessionRecording as cloudinaryUpload } from '../../utils/cloudinary';
 
 let socket: Socket | null = null;
 
@@ -118,7 +119,7 @@ class CustomStrokeRecorder {
     }
   }
 
-  private createFrame(paths: any[], timestamp: number): void {
+  private createFrame(paths: any[]): void {
     // Clear canvas for this frame
     this.ctx.fillStyle = 'white';
     this.ctx.fillRect(0, 0, this.width, this.height);
@@ -127,7 +128,7 @@ class CustomStrokeRecorder {
     if (Array.isArray(paths)) {
       paths.forEach(path => {
         try {
-          this.drawPath(path, timestamp);
+          this.drawPath(path, 0);
         } catch (error) {
           console.error('Error drawing path:', error);
         }
@@ -138,11 +139,34 @@ class CustomStrokeRecorder {
   public async recordStrokes(paths: any[]): Promise<Blob> {
     return new Promise((resolve, reject) => {
       try {
+        // Draw all paths to the canvas first
+        this.createFrame(paths);
+
         // Set up canvas stream
         const stream = this.canvas.captureStream(this.frameRate);
 
+        // Try different mimeTypes based on browser support
+        let mimeType = 'video/webm;codecs=vp9';
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = 'video/webm;codecs=vp8';
+          if (!MediaRecorder.isTypeSupported(mimeType)) {
+            mimeType = 'video/webm';
+            if (!MediaRecorder.isTypeSupported(mimeType)) {
+              mimeType = '';  // Use browser default
+            }
+          }
+        }
+
+        // Use better MediaRecorder options
+        const options = mimeType ? {
+          mimeType,
+          videoBitsPerSecond: 2500000 // 2.5 Mbps
+        } : {};
+
+        console.log('Using MediaRecorder with mimeType:', mimeType || 'browser default');
+
         // Set up media recorder
-        this.mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+        this.mediaRecorder = new MediaRecorder(stream, options);
         this.recordedChunks = [];
 
         this.mediaRecorder.ondataavailable = (event) => {
@@ -152,42 +176,50 @@ class CustomStrokeRecorder {
         };
 
         this.mediaRecorder.onstop = () => {
-          const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
-          resolve(blob);
+          try {
+            const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
+            console.log(`Recording complete: ${blob.size} bytes`);
+            resolve(blob);
+          } catch (error) {
+            console.error('Error creating blob:', error);
+            reject(error);
+          }
         };
 
         // Start recording
         this.mediaRecorder.start();
         this.startTime = Date.now();
 
-        // Create each frame with a delay to simulate the drawing
-        // Just draw all paths for simplified recording
-        this.createFrame(paths, 0);
-
-        // Stop recording after a short delay to ensure the frame is captured
+        // Record for a bit longer to ensure we get good quality frames
         setTimeout(() => {
           if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
             this.mediaRecorder.stop();
           } else {
             reject(new Error('MediaRecorder is not active'));
           }
-        }, 2000); // Record for 2 seconds to ensure we have a valid video
+        }, 3000); // 3 seconds to ensure we have a valid video
       } catch (error) {
+        console.error('Error setting up recording:', error);
         reject(error);
       }
     });
   }
 }
 
-// Simple mock for uploadSessionRecording
+// Actual implementation of uploadSessionRecording that uses Cloudinary
 const uploadSessionRecording = async (blob: Blob): Promise<string> => {
-  // In a real implementation, this would upload to Cloudinary
-  // For now, we'll simulate a successful upload
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve('https://example.com/mock-video-url');
-    }, 1000);
-  });
+  try {
+    console.log('Starting actual Cloudinary upload...');
+    console.log(`Blob size: ${blob.size} bytes, type: ${blob.type}`);
+
+    // Use the real Cloudinary upload function
+    const videoUrl = await cloudinaryUpload(blob);
+    console.log('Upload successful, URL:', videoUrl);
+    return videoUrl;
+  } catch (error) {
+    console.error('Error in uploadSessionRecording:', error);
+    throw error; // Re-throw to be handled by the caller
+  }
 };
 
 const StudentWhiteboard: React.FC = () => {
@@ -199,6 +231,7 @@ const StudentWhiteboard: React.FC = () => {
   const sessionStartTimeRef = useRef<Date | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const handleWhiteboardUpdate = useCallback(async (data: WhiteboardUpdate) => {
     if (!data.whiteboardData) return;
@@ -316,6 +349,7 @@ const StudentWhiteboard: React.FC = () => {
       return;
     }
 
+    setSaveError(null);
     setIsSaving(true);
     try {
       console.log('Creating video from strokes...');
@@ -333,8 +367,18 @@ const StudentWhiteboard: React.FC = () => {
       const recorder = new CustomStrokeRecorder(canvasSize.width, canvasSize.height);
       const videoBlob = await recorder.recordStrokes(paths);
 
+      if (!videoBlob || videoBlob.size === 0) {
+        throw new Error('Failed to create video: Empty blob');
+      }
+
+      console.log(`Video blob created: ${videoBlob.size} bytes, type: ${videoBlob.type}`);
+
       console.log('Uploading video to Cloudinary...');
       const videoUrl = await uploadSessionRecording(videoBlob);
+
+      if (!videoUrl) {
+        throw new Error('Failed to get video URL after upload');
+      }
 
       console.log('Saving session to backend...');
       const response = await fetch(`${import.meta.env.VITE_API_URL}/api/sessions`, {
@@ -351,12 +395,14 @@ const StudentWhiteboard: React.FC = () => {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to save session');
+        const errorData = await response.json();
+        throw new Error(`Failed to save session: ${errorData.message || 'Unknown error'}`);
       }
 
       console.log('Session saved successfully');
     } catch (error) {
       console.error('Error saving session:', error);
+      setSaveError(error instanceof Error ? error.message : 'Unknown error saving session');
     } finally {
       setIsSaving(false);
     }
@@ -512,6 +558,27 @@ const StudentWhiteboard: React.FC = () => {
               <p className="text-gray-600 text-center">
                 Please wait while we save your session recording...
               </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Error Modal */}
+      {saveError && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-sm w-full mx-4">
+            <div className="flex flex-col items-center">
+              <AlertCircle className="w-12 h-12 text-red-600 mb-4" />
+              <h3 className="text-lg font-semibold mb-2">Error Saving Session</h3>
+              <p className="text-red-600 text-center mb-4">
+                {saveError}
+              </p>
+              <button
+                onClick={() => setSaveError(null)}
+                className="px-4 py-2 bg-indigo-600 text-white rounded-md"
+              >
+                Dismiss
+              </button>
             </div>
           </div>
         </div>
