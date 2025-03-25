@@ -7,12 +7,13 @@ const router = express.Router();
 // Create a new session
 router.post('/', auth, studentAuth, async (req, res) => {
   try {
-    const { teacherId, videoUrl, whiteboardData } = req.body;
+    const { teacherId, videoUrl, whiteboardData, hasAudio = false } = req.body;
     const session = new Session({
       teacherId,
       studentId: req.user.userId, // This ensures the session is tied to the current student
       videoUrl,
       whiteboardData,
+      hasAudio, // Add the hasAudio flag
       endTime: new Date()
     });
     await session.save();
@@ -54,6 +55,22 @@ router.delete('/:id', auth, studentAuth, async (req, res) => {
     res.json({ message: 'Session deleted successfully' });
   } catch (error) {
     console.error('Error deleting session:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Store audio data from teacher (for direct API storage rather than socket transfer)
+router.post('/audio', auth, async (req, res) => {
+  try {
+    const { teacherId, audioData } = req.body;
+
+    // This would typically store to database in production
+    // For now, relying on in-memory storage in index.js
+
+    console.log(`Audio data submission from teacher ${teacherId} received`);
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('Error storing audio data:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });

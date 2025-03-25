@@ -36,12 +36,15 @@ const io = new Server(httpServer, {
 const liveTeachers = new Map(); // teacherId -> Set of student sockets
 let currentLiveTeacher = null; // Track the currently live teacher
 
+// Global map to store audio data temporarily
+const audioDataMap = new Map();
+
 // Middleware
 app.use(cors({
   origin: allowedOrigins,
   credentials: true
 }));
-app.use(express.json());
+app.use(express.json({ limit: '50mb' })); // Increased limit for audio data
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -97,6 +100,24 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Handle audio data from teacher
+  socket.on('audioData', (data) => {
+    console.log('Audio data received from teacher:', data.teacherId, 'size:', data.audioData.length);
+    audioDataMap.set(data.teacherId, data.audioData);
+
+    // Notify students that audio is available for this session
+    socket.broadcast.to(`teacher-${data.teacherId}`).emit('audioAvailable', {
+      teacherId: data.teacherId
+    });
+  });
+
+  // Handle session ended with audio info
+  socket.on('sessionEnded', (data) => {
+    console.log('Session ended with audio info:', data);
+    // Broadcast to all students in the room that the session has ended with audio info
+    socket.broadcast.to(`teacher-${data.teacherId}`).emit('sessionEnded', data);
+  });
+
   socket.on('joinTeacherRoom', (teacherId) => {
     if (liveTeachers.has(teacherId)) {
       console.log('Student joined teacher room:', teacherId);
@@ -150,6 +171,39 @@ io.on('connection', (socket) => {
       }
     }
   });
+});
+
+// Add direct route for audio access (this allows bypassing socket.io for the large audio data)
+app.get('/api/sessions/audio/:teacherId', async (req, res) => {
+  try {
+    const { teacherId } = req.params;
+
+    // Check if audio data exists for this teacher
+    if (!audioDataMap.has(teacherId)) {
+      return res.status(404).json({ message: 'No audio recording found for this session' });
+    }
+
+    // Get the audio data
+    const audioData = audioDataMap.get(teacherId);
+
+    // Create buffer from base64 data
+    const base64Data = audioData.split(',')[1]; // Remove the data URL prefix
+    const buffer = Buffer.from(base64Data, 'base64');
+
+    // Set response headers
+    res.setHeader('Content-Type', 'audio/webm');
+    res.setHeader('Content-Disposition', `attachment; filename="session-${teacherId}-audio.webm"`);
+
+    // Send the audio file
+    res.send(buffer);
+
+    // Optionally, remove the audio data after sending it to save memory
+    // Uncomment in production to reduce memory usage
+    // audioDataMap.delete(teacherId);
+  } catch (error) {
+    console.error('Error retrieving audio data:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
 });
 
 // MongoDB connection

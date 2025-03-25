@@ -19,6 +19,10 @@ const sessionSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  hasAudio: {
+    type: Boolean,
+    default: false
+  },
   startTime: {
     type: Date,
     default: Date.now

@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
-import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown, Square, Triangle } from 'lucide-react';
+import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown, Square, Triangle, Mic, MicOff } from 'lucide-react';
 import { io } from 'socket.io-client';
 import type { TypedSocket } from '../../types/socket';
 
@@ -80,6 +80,63 @@ const initializeSocket = () => {
   return socket;
 };
 
+// Audio recording functionality
+class AudioRecorder {
+  private mediaRecorder: MediaRecorder | null = null;
+  private audioChunks: Blob[] = [];
+  private stream: MediaStream | null = null;
+
+  async startRecording(): Promise<void> {
+    try {
+      // Request microphone access
+      this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      // Create MediaRecorder with audio stream
+      this.mediaRecorder = new MediaRecorder(this.stream);
+
+      this.audioChunks = [];
+
+      // Listen for data available event
+      this.mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          this.audioChunks.push(event.data);
+        }
+      };
+
+      // Start recording
+      this.mediaRecorder.start(1000); // Collect data in 1-second chunks
+      console.log('Audio recording started');
+    } catch (error) {
+      console.error('Error starting audio recording:', error);
+      throw new Error('Failed to start audio recording');
+    }
+  }
+
+  async stopRecording(): Promise<Blob> {
+    return new Promise((resolve, reject) => {
+      if (!this.mediaRecorder) {
+        reject(new Error('No recording in progress'));
+        return;
+      }
+
+      this.mediaRecorder.onstop = () => {
+        // Clean up tracks
+        if (this.stream) {
+          this.stream.getTracks().forEach(track => track.stop());
+          this.stream = null;
+        }
+
+        // Create audio blob
+        const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
+        console.log('Audio recording stopped, blob size:', audioBlob.size);
+        resolve(audioBlob);
+      };
+
+      this.mediaRecorder.stop();
+    });
+  }
+}
+
 // Stroke styles configuration
 const COLORS = [
   { name: 'Black', value: '#000000' },
@@ -128,6 +185,7 @@ const TeacherWhiteboard: React.FC = () => {
   const canvasRef = useRef<ReactSketchCanvasRef | null>(null);
   const customCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const customCtxRef = useRef<CanvasRenderingContext2D | null>(null);
+  const audioRecorderRef = useRef<AudioRecorder | null>(null);
 
   const [isLive, setIsLive] = useState(false);
   const [showStartModal, setShowStartModal] = useState(false);
@@ -135,6 +193,8 @@ const TeacherWhiteboard: React.FC = () => {
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
   const [error, setError] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [isAudioEnabled, setIsAudioEnabled] = useState(true);
+  const [isAudioRecording, setIsAudioRecording] = useState(false);
 
   // Drawing state
   const [drawingState, setDrawingState] = useState<DrawingState>({
@@ -179,6 +239,13 @@ const TeacherWhiteboard: React.FC = () => {
       customCtxRef.current = ctx;
     }
   }, [canvasSize]);
+
+  // Initialize audio recorder
+  useEffect(() => {
+    if (!audioRecorderRef.current) {
+      audioRecorderRef.current = new AudioRecorder();
+    }
+  }, []);
 
   const handleStroke = useCallback(async () => {
     if (isLive && canvasRef.current && socket) {
@@ -227,6 +294,51 @@ const TeacherWhiteboard: React.FC = () => {
     }
   }, [drawingState]);
 
+  // Start audio recording
+  const startAudioRecording = async () => {
+    if (!audioRecorderRef.current) {
+      audioRecorderRef.current = new AudioRecorder();
+    }
+
+    try {
+      await audioRecorderRef.current.startRecording();
+      setIsAudioRecording(true);
+      console.log('Started audio recording');
+    } catch (error) {
+      console.error('Error starting audio recording:', error);
+      setError('Failed to access microphone. Please check permissions and try again.');
+      setIsAudioEnabled(false);
+    }
+  };
+
+  // Stop audio recording and get the blob
+  const stopAudioRecording = async (): Promise<Blob | null> => {
+    if (!audioRecorderRef.current || !isAudioRecording) {
+      return null;
+    }
+
+    try {
+      const audioBlob = await audioRecorderRef.current.stopRecording();
+      setIsAudioRecording(false);
+      console.log('Stopped audio recording, blob size:', audioBlob.size);
+      return audioBlob;
+    } catch (error) {
+      console.error('Error stopping audio recording:', error);
+      setError('Failed to stop audio recording.');
+      return null;
+    }
+  };
+
+  // Toggle audio recording state
+  const toggleAudio = () => {
+    setIsAudioEnabled(prev => !prev);
+    if (isAudioRecording) {
+      stopAudioRecording().catch(err => {
+        console.error('Error stopping audio recording:', err);
+      });
+    }
+  };
+
   useEffect(() => {
     const socket = initializeSocket();
     const userId = localStorage.getItem('userId');
@@ -244,12 +356,23 @@ const TeacherWhiteboard: React.FC = () => {
       console.log('Disconnected from server');
       setIsLive(false);
       setIsConnecting(true);
+
+      // Stop audio recording if active
+      if (isAudioRecording) {
+        stopAudioRecording().catch(console.error);
+      }
     };
 
     const handleLiveError = (data: { message: string }) => {
       setError(data.message);
       setShowStartModal(false);
       setIsLive(false);
+
+      // Stop audio recording if active
+      if (isAudioRecording) {
+        stopAudioRecording().catch(console.error);
+      }
+
       if (canvasRef.current) {
         canvasRef.current.clearCanvas();
       }
@@ -263,11 +386,17 @@ const TeacherWhiteboard: React.FC = () => {
       socket.off('connect', handleConnect);
       socket.off('disconnect', handleDisconnect);
       socket.off('liveError', handleLiveError);
+
+      // Clean up audio recording
+      if (isAudioRecording) {
+        stopAudioRecording().catch(console.error);
+      }
+
       if (userId && isLive) {
         socket.emit('stopLive', userId);
       }
     };
-  }, [isLive, handleStroke]);
+  }, [isLive, handleStroke, isAudioRecording]);
 
   const handleStartLive = () => {
     setError(null);
@@ -287,6 +416,11 @@ const TeacherWhiteboard: React.FC = () => {
       setShowStartModal(false);
       socket.emit('startLive', userId);
 
+      // Start audio recording if enabled
+      if (isAudioEnabled) {
+        await startAudioRecording();
+      }
+
       // Send initial canvas state
       const paths = await canvasRef.current.exportPaths();
       socket.emit('whiteboardUpdate', {
@@ -296,17 +430,57 @@ const TeacherWhiteboard: React.FC = () => {
     }
   };
 
-  const confirmStopLive = () => {
+  const confirmStopLive = async () => {
     const userId = localStorage.getItem('userId');
     const socket = initializeSocket();
 
     if (userId) {
+      // Stop audio recording if active
+      let audioBlob = null;
+      if (isAudioRecording) {
+        audioBlob = await stopAudioRecording();
+      }
+
+      // Close the session
       setIsLive(false);
       setShowStopModal(false);
-      socket.emit('stopLive', userId);
+
+      // Notify about session end
+      if (audioBlob) {
+        // Convert blob to base64 for transmission
+        const reader = new FileReader();
+        reader.readAsDataURL(audioBlob);
+        reader.onloadend = () => {
+          const base64data = reader.result as string;
+
+          // Emit the audio data
+          socket.emit('audioData', {
+            teacherId: userId,
+            audioData: base64data
+          });
+
+          // Emit session ended with audio flag
+          socket.emit('sessionEnded', {
+            teacherId: userId,
+            hasAudio: true
+          });
+
+          // Then stop the live session
+          socket.emit('stopLive', userId);
+        };
+      } else {
+        // No audio, just stop the session
+        socket.emit('sessionEnded', {
+          teacherId: userId,
+          hasAudio: false
+        });
+        socket.emit('stopLive', userId);
+      }
+
       if (canvasRef.current) {
         canvasRef.current.clearCanvas();
       }
+
       // Reset history
       setStrokeHistory([]);
       setRedoStack([]);
@@ -470,6 +644,17 @@ const TeacherWhiteboard: React.FC = () => {
                   <Eraser size={20} /> Eraser
                 </button>
                 <button
+                  onClick={toggleAudio}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-md ${
+                    isAudioEnabled
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-200 text-gray-800 hover:bg-gray-300'
+                  }`}
+                  title={isAudioEnabled ? "Microphone On" : "Microphone Off"}
+                >
+                  {isAudioEnabled ? <Mic size={20} /> : <MicOff size={20} />}
+                </button>
+                <button
                   onClick={handleUndo}
                   disabled={strokeHistory.length === 0}
                   className={`flex items-center gap-2 px-4 py-2 rounded-md ${
@@ -522,6 +707,14 @@ const TeacherWhiteboard: React.FC = () => {
           <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-red-700">
             <AlertCircle size={20} />
             <p>{error}</p>
+          </div>
+        )}
+
+        {/* Audio Recording Indicator */}
+        {isAudioRecording && (
+          <div className="mb-4 p-2 bg-blue-50 border border-blue-200 rounded-lg flex items-center gap-2 text-blue-700">
+            <Mic size={20} className="animate-pulse" />
+            <p>Microphone active - your voice is being recorded</p>
           </div>
         )}
 
@@ -696,6 +889,18 @@ const TeacherWhiteboard: React.FC = () => {
             <p className="text-gray-600 mb-6">
               Are you sure you want to start a live whiteboard session? Students will be able to join and view your whiteboard.
             </p>
+            <div className="flex items-center mb-4">
+              <input
+                type="checkbox"
+                id="enable-audio"
+                checked={isAudioEnabled}
+                onChange={() => setIsAudioEnabled(prev => !prev)}
+                className="mr-2"
+              />
+              <label htmlFor="enable-audio" className="text-sm">
+                Enable microphone recording (students will be able to hear your voice in saved recordings)
+              </label>
+            </div>
             <div className="flex flex-col sm:flex-row justify-end gap-3">
               <button
                 onClick={() => setShowStartModal(false)}

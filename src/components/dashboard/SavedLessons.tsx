@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { format } from 'date-fns';
-import { Trash2, Video, Loader2 } from 'lucide-react';
+import { Trash2, Video, Loader2, Mic } from 'lucide-react';
 import Layout from '../layout/Layout';
 import SavedLessonPlayer from '../SavedLessons/SavedLessonPlayer';
 
@@ -12,6 +12,7 @@ interface Session {
   };
   videoUrl: string;
   startTime: string;
+  hasAudio: boolean;
 }
 
 const SavedLessons = () => {
@@ -116,13 +117,18 @@ const SavedLessons = () => {
                           : 'text-gray-400'
                       } />
                       <div>
-                        <p className={`font-medium ${
-                          selectedSession?._id === session._id
-                            ? 'text-indigo-700'
-                            : 'text-gray-900'
-                        }`}>
-                          {session.teacherId.firstName} {session.teacherId.lastName}
-                        </p>
+                        <div className="flex items-center gap-2">
+                          <p className={`font-medium ${
+                            selectedSession?._id === session._id
+                              ? 'text-indigo-700'
+                              : 'text-gray-900'
+                          }`}>
+                            {session.teacherId.firstName} {session.teacherId.lastName}
+                          </p>
+                          {session.hasAudio && (
+                            <Mic size={14} className="text-blue-500" title="Includes audio" />
+                          )}
+                        </div>
                         <p className="text-sm text-gray-500">
                           {format(new Date(session.startTime), 'PPp')}
                         </p>
@@ -148,7 +154,10 @@ const SavedLessons = () => {
             </div>
             <div className="lg:col-span-2 bg-white rounded-lg shadow">
               {selectedSession ? (
-                <SavedLessonPlayer videoUrl={selectedSession.videoUrl} />
+                <SavedLessonPlayer
+                  videoUrl={selectedSession.videoUrl}
+                  hasAudio={selectedSession.hasAudio}
+                />
               ) : (
                 <div className="p-8 text-center text-gray-500">
                   <Video size={48} className="mx-auto mb-3 text-gray-400" />
