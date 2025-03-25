@@ -1,9 +1,3 @@
-// Modified version of StudentWhiteboard.tsx
-// Key changes:
-// 1. Match canvas dimensions with teacher's whiteboard
-// 2. Add aspect ratio preservation
-// 3. Fix path loading to handle different canvas sizes
-
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
 import { io, Socket } from 'socket.io-client';
@@ -32,33 +26,137 @@ const initializeSocket = () => {
 const DEFAULT_CANVAS_WIDTH = 800;
 const DEFAULT_CANVAS_HEIGHT = 600;
 
+// Custom triangle renderer
+const drawTriangle = (ctx: CanvasRenderingContext2D, x: number, y: number, size: number, color: string, opacity: number) => {
+  ctx.fillStyle = color;
+  ctx.globalAlpha = opacity;
+
+  const halfSize = size / 2;
+
+  ctx.beginPath();
+  ctx.moveTo(x, y - halfSize); // top point
+  ctx.lineTo(x - halfSize, y + halfSize); // bottom left
+  ctx.lineTo(x + halfSize, y + halfSize); // bottom right
+  ctx.closePath();
+  ctx.fill();
+};
+
 const StudentWhiteboard: React.FC = () => {
   const canvasRef = useRef<ReactSketchCanvasRef | null>(null);
+  const customCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
   const [isTeacherLive, setIsTeacherLive] = useState(false);
   const [currentTeacherId, setCurrentTeacherId] = useState<string | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: DEFAULT_CANVAS_WIDTH, height: DEFAULT_CANVAS_HEIGHT });
   const [containerSize, setContainerSize] = useState({ width: DEFAULT_CANVAS_WIDTH, height: DEFAULT_CANVAS_HEIGHT });
-  const lastUpdateRef = useRef<string>('[]');
+  const lastUpdateRef = useRef<string>('{}');
   const sessionStartTimeRef = useRef<Date | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [currentBrushType, setCurrentBrushType] = useState<string>('round');
 
-  // Modified to handle scale differences between teacher and student canvas
+  // Create custom canvas for triangle brush
+  useEffect(() => {
+    if (isTeacherLive && containerRef.current && !customCanvasRef.current) {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvasSize.width;
+      canvas.height = canvasSize.height;
+      canvas.style.position = 'absolute';
+      canvas.style.top = '0';
+      canvas.style.left = '0';
+      canvas.style.pointerEvents = 'none';
+      canvas.style.zIndex = '10';
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
+      customCanvasRef.current = canvas;
+      containerRef.current.appendChild(canvas);
+    }
+
+    return () => {
+      if (customCanvasRef.current && containerRef.current) {
+        containerRef.current.removeChild(customCanvasRef.current);
+        customCanvasRef.current = null;
+      }
+    };
+  }, [isTeacherLive, canvasSize]);
+
+  // Modified to handle different brush types including custom triangle
   const handleWhiteboardUpdate = useCallback(async (data: WhiteboardUpdate) => {
     if (!canvasRef.current) return;
 
     try {
       lastUpdateRef.current = data.whiteboardData;
-      await canvasRef.current.clearCanvas();
 
-      if (data.whiteboardData && data.whiteboardData !== '[]') {
-        const paths = JSON.parse(data.whiteboardData);
-        await canvasRef.current.loadPaths(paths);
+      // Parse the data
+      let parsedData;
+      try {
+        parsedData = JSON.parse(data.whiteboardData);
+      } catch (e) {
+        console.error('Error parsing whiteboard data:', e);
+        return;
+      }
+
+      // Handle the new format with brushType and strokes
+      const brushType = parsedData.brushType || 'round';
+      const strokes = parsedData.strokes || parsedData; // backwards compatibility
+
+      setCurrentBrushType(brushType);
+
+      // For triangle brush, use the custom canvas
+      if (brushType === 'triangle') {
+        if (customCanvasRef.current) {
+          const ctx = customCanvasRef.current.getContext('2d');
+          if (ctx) {
+            // Clear previous drawings
+            ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
+
+            // Draw all triangles
+            if (Array.isArray(strokes)) {
+              strokes.forEach((stroke: any) => {
+                if (stroke.type === 'triangle') {
+                  // Calculate scaling for responsive display
+                  const scaleX = containerSize.width / canvasSize.width;
+                  const scaleY = containerSize.height / canvasSize.height;
+
+                  // Draw scaled triangle
+                  drawTriangle(
+                    ctx,
+                    stroke.x * scaleX,
+                    stroke.y * scaleY,
+                    stroke.size * Math.min(scaleX, scaleY),
+                    stroke.color,
+                    stroke.opacity || 1.0
+                  );
+                }
+              });
+            }
+          }
+        }
+
+        // Clear the standard canvas
+        await canvasRef.current.clearCanvas();
+      } else {
+        // For standard brushes, use the React Sketch Canvas
+        await canvasRef.current.clearCanvas();
+
+        // Clear any triangles from custom canvas
+        if (customCanvasRef.current) {
+          const ctx = customCanvasRef.current.getContext('2d');
+          if (ctx) {
+            ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
+          }
+        }
+
+        // Load paths from standard brushes
+        if (strokes && strokes.length > 0) {
+          await canvasRef.current.loadPaths(strokes);
+        }
       }
     } catch (error) {
       console.error('Error updating whiteboard:', error);
     }
-  }, []);
+  }, [canvasSize, containerSize]);
 
   const saveSession = useCallback(async () => {
     if (!currentTeacherId || !lastUpdateRef.current || isSaving) {
@@ -69,9 +167,17 @@ const StudentWhiteboard: React.FC = () => {
     setIsSaving(true);
     try {
       console.log('Creating video from strokes...');
-      const paths = JSON.parse(lastUpdateRef.current);
+      let parsedData;
+      try {
+        parsedData = JSON.parse(lastUpdateRef.current);
+      } catch (e) {
+        console.error('Error parsing data for recording:', e);
+        parsedData = { strokes: [] };
+      }
+
+      const strokes = parsedData.strokes || parsedData;
       const recorder = new StrokeRecorder(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
-      const videoBlob = await recorder.recordStrokes(paths);
+      const videoBlob = await recorder.recordStrokes(strokes);
 
       console.log('Uploading video to Cloudinary...');
       const videoUrl = await uploadSessionRecording(videoBlob);
@@ -118,6 +224,12 @@ const StudentWhiteboard: React.FC = () => {
           height: containerHeight
         });
 
+        // Update custom canvas size if it exists
+        if (customCanvasRef.current) {
+          customCanvasRef.current.style.width = '100%';
+          customCanvasRef.current.style.height = '100%';
+        }
+
         // Keep the logical canvas size the same as teacher's
         setCanvasSize({
           width: DEFAULT_CANVAS_WIDTH,
@@ -149,6 +261,14 @@ const StudentWhiteboard: React.FC = () => {
       sessionStartTimeRef.current = null;
       if (canvasRef.current) {
         canvasRef.current.clearCanvas();
+      }
+
+      // Clear custom canvas
+      if (customCanvasRef.current) {
+        const ctx = customCanvasRef.current.getContext('2d');
+        if (ctx) {
+          ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
+        }
       }
     };
 
@@ -191,7 +311,7 @@ const StudentWhiteboard: React.FC = () => {
         socket.emit('leaveTeacherRoom', currentTeacherId);
       }
     };
-  }, [handleWhiteboardUpdate, saveSession, currentTeacherId]);
+  }, [handleWhiteboardUpdate, saveSession, currentTeacherId, canvasSize]);
 
   if (connectionError) {
     return (
@@ -240,11 +360,14 @@ const StudentWhiteboard: React.FC = () => {
           className="border rounded-lg overflow-hidden bg-white"
           style={{ width: '100%', height: `${containerSize.height}px` }}
         >
-          <div style={{
-            width: '100%',
-            height: '100%',
-            position: 'relative'
-          }}>
+          <div
+            ref={containerRef}
+            style={{
+              width: '100%',
+              height: '100%',
+              position: 'relative'
+            }}
+          >
             <ReactSketchCanvas
               ref={canvasRef}
               strokeWidth={4}
@@ -257,7 +380,8 @@ const StudentWhiteboard: React.FC = () => {
                 top: 0,
                 left: 0,
                 right: 0,
-                bottom: 0
+                bottom: 0,
+                display: currentBrushType === 'triangle' ? 'none' : 'block'
               }}
               canvasColor="white"
               exportWithBackgroundImage={false}
