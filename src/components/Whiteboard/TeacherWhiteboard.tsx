@@ -287,31 +287,12 @@ const TeacherWhiteboard: React.FC = () => {
 
   // Handle brush type change
   const handleBrushTypeChange = (type: string) => {
-    // Handle special brush types that require adjusting multiple properties
     const newState = { ...drawingState, brushType: type };
 
-    switch (type) {
-      case 'round-thin':
-        newState.strokeWidth = 2; // Very thin
-        newState.brushType = 'round';
-        break;
-      case 'round-medium':
-        newState.strokeWidth = 6; // Medium width
-        newState.brushType = 'round';
-        break;
-      case 'round-bold':
-        newState.strokeWidth = 12; // Bold width
-        newState.brushType = 'round';
-        break;
-      case 'round-marker':
-        newState.strokeWidth = 16; // Large width
-        newState.opacity = 0.7; // Partially transparent
-        newState.brushType = 'round';
-        break;
-      default:
-        // For standard brush types (round, square, butt)
-        newState.brushType = type;
-        break;
+    if (type === 'square') {
+      newState.brushType = 'square';
+    } else {
+      newState.brushType = 'round';
     }
 
     setDrawingState(newState);
@@ -593,24 +574,25 @@ const TeacherWhiteboard: React.FC = () => {
         )}
 
         <div id="whiteboard-container" className="border rounded-lg overflow-hidden bg-white">
-          <ReactSketchCanvas
-            ref={canvasRef}
-            strokeWidth={drawingState.strokeWidth}
-            strokeColor={drawingState.isEraser ? "#FFFFFF" : drawingState.color}
-            canvasColor="white"
-            width={`${canvasSize.width}px`}
-            height={`${canvasSize.height}px`}
-            exportWithBackgroundImage={false}
-            withTimestamp={false}
-            allowOnlyPointerType="all"
-            lineCap={drawingState.brushType as "round" | "butt" | "square"}
-            style={{
-              opacity: drawingState.opacity,
-            }}
-            className="touch-none"
-            onStroke={handleStroke}
-            onChange={handleStroke}
-          />
+        <ReactSketchCanvas
+          ref={canvasRef}
+          strokeWidth={drawingState.strokeWidth}
+          strokeColor={drawingState.isEraser ? "#FFFFFF" : drawingState.color}
+          canvasColor="white"
+          width={`${canvasSize.width}px`}
+          height={`${canvasSize.height}px`}
+          exportWithBackgroundImage={false}
+          withTimestamp={false}
+          allowOnlyPointerType="all"
+          lineCap={drawingState.brushType as "round" | "butt" | "square"}
+          lineJoin={drawingState.brushType === "square" ? "miter" : "round"} // Add this line
+          style={{
+            opacity: drawingState.opacity,
+          }}
+          className="touch-none"
+          onStroke={handleStroke}
+          onChange={handleStroke}
+        />
         </div>
       </div>
 
