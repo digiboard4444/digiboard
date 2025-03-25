@@ -30,7 +30,7 @@ export const OPACITY_OPTIONS = [
 ];
 
 export const BRUSH_TYPES = [
-  { name: 'Circle', value: 'circle', icon: 'Circle', description: 'Round brush tip' },
+  { name: 'Circle', value: 'circle', icon: 'Circle', description: 'Solid brush tip' },
   { name: 'Dotted Line', value: 'dotted-line', icon: 'MinusIcon', description: 'Alternating color/white' },
 ];
 

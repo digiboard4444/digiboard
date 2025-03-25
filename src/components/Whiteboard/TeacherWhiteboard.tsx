@@ -3,7 +3,6 @@ import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
 import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, Circle, ChevronDown, Minus } from 'lucide-react';
 import { io } from 'socket.io-client';
 import type { TypedSocket } from '../../types/socket';
-import { drawCircleBrush, drawDottedLineBrush, StrokePoint, BrushOptions } from '../../lib/brushUtils';
 import {
   COLORS,
   STROKE_SIZES,
@@ -38,9 +37,6 @@ const initializeSocket = () => {
 
 const TeacherWhiteboard: React.FC = () => {
   const canvasRef = useRef<ReactSketchCanvasRef | null>(null);
-  const customCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const customCtxRef = useRef<CanvasRenderingContext2D | null>(null);
-
   const [isLive, setIsLive] = useState(false);
   const [showStartModal, setShowStartModal] = useState(false);
   const [showStopModal, setShowStopModal] = useState(false);
@@ -73,19 +69,6 @@ const TeacherWhiteboard: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Initialize custom canvas for specialized brushes
-  useEffect(() => {
-    const canvas = document.createElement('canvas');
-    canvas.width = canvasSize.width;
-    canvas.height = canvasSize.height;
-
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      customCanvasRef.current = canvas;
-      customCtxRef.current = ctx;
-    }
-  }, [canvasSize]);
-
   // Close dropdown when clicking outside
   useEffect(() => {
     return setupClickOutsideHandler(setOpenDropdown);
@@ -113,27 +96,6 @@ const TeacherWhiteboard: React.FC = () => {
       }
     }
   }, [isLive]);
-
-  // Apply the appropriate brush based on the type
-  const applyBrush = useCallback((point: StrokePoint) => {
-    if (!customCtxRef.current) return;
-
-    const options: BrushOptions = {
-      color: drawingState.isEraser ? '#FFFFFF' : drawingState.color,
-      size: drawingState.strokeWidth,
-      opacity: drawingState.opacity
-    };
-
-    switch (drawingState.brushType) {
-      case 'dotted-line':
-        drawDottedLineBrush(customCtxRef.current, point, options);
-        break;
-      case 'circle':
-      default:
-        drawCircleBrush(customCtxRef.current, point, options);
-        break;
-    }
-  }, [drawingState]);
 
   useEffect(() => {
     const socket = initializeSocket();
@@ -297,8 +259,24 @@ const TeacherWhiteboard: React.FC = () => {
     }
   };
 
+  // Create dynamic dotted line style based on stroke width
+  const getDottedLineStyle = () => {
+    // For dotted line, we want each segment to be the size of the stroke width
+    const size = drawingState.strokeWidth;
+    return `
+      #whiteboard-container svg path {
+        stroke-dasharray: ${size}px, ${size}px !important;
+      }
+    `;
+  };
+
   return (
     <>
+      {/* Inject dotted line CSS if needed */}
+      {drawingState.brushType === 'dotted-line' && !drawingState.isEraser && (
+        <style dangerouslySetInnerHTML={{ __html: getDottedLineStyle() }} />
+      )}
+
       <div className="p-4">
         <div className="mb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <h2 className="text-2xl font-bold">Whiteboard</h2>
