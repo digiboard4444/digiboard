@@ -25,33 +25,21 @@ const SavedLessons = () => {
     try {
       setIsLoading(true);
       setError(null);
-
-      // Log the full API URL for debugging
-      console.log('Fetching from URL:', `${import.meta.env.VITE_API_URL}/api/sessions/student`);
-
       const response = await fetch(`${import.meta.env.VITE_API_URL}/api/sessions/student`, {
-        method: 'GET', // Explicitly set method
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`,
-          'Content-Type': 'application/json' // Add content type header
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
         }
       });
 
-      console.log('Response status:', response.status);
-
       if (!response.ok) {
-        // Try to get more error details
-        const errorText = await response.text();
-        console.error('Error response:', errorText);
-        throw new Error(`Failed to fetch sessions. Status: ${response.status}, ${errorText}`);
+        throw new Error('Failed to fetch sessions');
       }
 
       const data = await response.json();
-      console.log('Sessions data:', data);
       setSessions(data);
     } catch (error) {
-      console.error('Detailed error fetching sessions:', error);
-      setError(error instanceof Error ? error.message : 'Failed to load saved lessons. Please try again later.');
+      console.error('Error fetching sessions:', error);
+      setError('Failed to load saved lessons. Please try again later.');
     } finally {
       setIsLoading(false);
     }
