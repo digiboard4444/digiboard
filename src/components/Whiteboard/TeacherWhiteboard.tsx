@@ -472,16 +472,6 @@ return (
     <Trash2 size={20} /> Clear
   </button>
   <button
-    onClick={() => toggleEraser(setDrawingState)}
-    className={`flex items-center gap-2 px-4 py-2 rounded-md ${
-      drawingState.isEraser
-        ? 'bg-blue-600 text-white'
-        : 'bg-gray-200 text-gray-800 hover:bg-gray-300'
-    }`}
-  >
-    <Eraser size={20} /> Eraser
-  </button>
-  <button
     onClick={handleUndo}
     disabled={strokeHistory.length === 0}
     className={`flex items-center gap-2 px-4 py-2 rounded-md ${
@@ -637,9 +627,7 @@ className={`flex items-center gap-2 px-4 py-2 rounded-md ${
     </div>
   </div>
 )}
-</div>
-
-{/* Size Selector */}
+</div>            {/* Size Selector */}
 <div className="relative dropdown-container" onClick={(e) => e.stopPropagation()}>
 <button
   onClick={() => toggleDropdown('size', openDropdown, setOpenDropdown)}
@@ -700,9 +688,8 @@ className={`flex items-center gap-2 px-4 py-2 rounded-md ${
   </div>
 )}
 </div>
-
-{/* Brush Type Selector */}
-<div className="relative dropdown-container" onClick={(e) => e.stopPropagation()}>
+</div>
+)}>
 <button
   onClick={() => toggleDropdown('brush', openDropdown, setOpenDropdown)}
   className="flex items-center gap-2 px-3 py-2 rounded hover:bg-gray-100"
