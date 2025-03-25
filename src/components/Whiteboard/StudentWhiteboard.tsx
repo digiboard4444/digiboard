@@ -56,6 +56,10 @@ const StudentWhiteboard: React.FC = () => {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [currentBrushType, setCurrentBrushType] = useState<string>('round');
 
+  // Flag to prevent saving when just switching brush types
+  const lastActivityRef = useRef<number>(Date.now());
+  const isSavingSessionRef = useRef<boolean>(false);
+
   // Create custom canvas for triangle brush
   useEffect(() => {
     if (isTeacherLive && containerRef.current && !customCanvasRef.current) {
@@ -84,6 +88,9 @@ const StudentWhiteboard: React.FC = () => {
   // Modified to handle different brush types including custom triangle
   const handleWhiteboardUpdate = useCallback(async (data: WhiteboardUpdate) => {
     if (!canvasRef.current) return;
+
+    // Update the last activity timestamp
+    lastActivityRef.current = Date.now();
 
     try {
       lastUpdateRef.current = data.whiteboardData;
@@ -159,12 +166,20 @@ const StudentWhiteboard: React.FC = () => {
   }, [canvasSize, containerSize]);
 
   const saveSession = useCallback(async () => {
+    // Prevent multiple simultaneous save attempts
+    if (isSavingSessionRef.current) {
+      return;
+    }
+
+    // Don't save if we don't have enough data
     if (!currentTeacherId || !lastUpdateRef.current || isSaving) {
       console.log('No session data to save or already saving');
       return;
     }
 
+    isSavingSessionRef.current = true;
     setIsSaving(true);
+
     try {
       console.log('Creating video from strokes...');
       let parsedData;
@@ -205,6 +220,7 @@ const StudentWhiteboard: React.FC = () => {
       console.error('Error saving session:', error);
     } finally {
       setIsSaving(false);
+      isSavingSessionRef.current = false;
     }
   }, [currentTeacherId, isSaving]);
 
@@ -252,23 +268,42 @@ const StudentWhiteboard: React.FC = () => {
       setCurrentTeacherId(data.teacherId);
       socket.emit('joinTeacherRoom', data.teacherId);
       sessionStartTimeRef.current = new Date();
+      lastActivityRef.current = Date.now();
     };
 
     const handleTeacherOffline = async () => {
-      await saveSession();
-      setIsTeacherLive(false);
-      setCurrentTeacherId(null);
-      sessionStartTimeRef.current = null;
-      if (canvasRef.current) {
-        canvasRef.current.clearCanvas();
-      }
+      // Only save if the teacher has been truly offline
+      // and not just switching brush types (which might trigger quick disconnect/reconnect)
+      // Wait 1 second to see if teacher reconnects quickly (brush change)
 
-      // Clear custom canvas
-      if (customCanvasRef.current) {
-        const ctx = customCanvasRef.current.getContext('2d');
-        if (ctx) {
-          ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
+      const actuallyOffline = await new Promise(resolve => {
+        setTimeout(() => {
+          // If we've received any activity in the last 2 seconds, teacher is probably still connected
+          const timeSinceLastActivity = Date.now() - lastActivityRef.current;
+          resolve(timeSinceLastActivity > 2000);
+        }, 1000);
+      });
+
+      if (actuallyOffline) {
+        console.log('Teacher is offline, saving session...');
+        await saveSession();
+        setIsTeacherLive(false);
+        setCurrentTeacherId(null);
+        sessionStartTimeRef.current = null;
+
+        if (canvasRef.current) {
+          canvasRef.current.clearCanvas();
         }
+
+        // Clear custom canvas
+        if (customCanvasRef.current) {
+          const ctx = customCanvasRef.current.getContext('2d');
+          if (ctx) {
+            ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
+          }
+        }
+      } else {
+        console.log('Teacher appears to be changing brush types or temporarily disconnected, not saving session');
       }
     };
 
