@@ -36,6 +36,9 @@ const io = new Server(httpServer, {
 const liveTeachers = new Map(); // teacherId -> Set of student sockets
 let currentLiveTeacher = null; // Track the currently live teacher
 
+// NEW: Track audio status separately from live status
+const teacherAudioStatus = new Map(); // teacherId -> boolean (audio enabled)
+
 // Global map to store audio data temporarily
 const audioDataMap = new Map();
 
@@ -56,18 +59,26 @@ io.on('connection', (socket) => {
   console.log('A user connected');
   let currentTeacherId = null;
   let isStudent = false;
-  let isAudioActive = false; // Track audio status separately from live status
-
-  socket.on('audioToggle', (data) => {
-    // Broadcast to all students in the teacher's room
-    io.to(data.teacherId).emit('audioToggle', data);
-  });
 
   // Handle teacher status check
   socket.on('checkTeacherStatus', () => {
+    console.log('Client checking teacher status');
     // Send current live teacher to the requesting client
     if (currentLiveTeacher) {
-      socket.emit('teacherOnline', { teacherId: currentLiveTeacher });
+      console.log('Informing client about active teacher:', currentLiveTeacher);
+      socket.emit('teacherOnline', {
+        teacherId: currentLiveTeacher,
+        timestamp: Date.now()
+      });
+
+      // Also send current audio status if available
+      if (teacherAudioStatus.has(currentLiveTeacher)) {
+        console.log('Sending current audio status:', teacherAudioStatus.get(currentLiveTeacher));
+        socket.emit('audioToggle', {
+          teacherId: currentLiveTeacher,
+          enabled: teacherAudioStatus.get(currentLiveTeacher)
+        });
+      }
     }
   });
 
@@ -85,7 +96,12 @@ io.on('connection', (socket) => {
     currentTeacherId = teacherId;
     currentLiveTeacher = teacherId;
     socket.join(`teacher-${teacherId}`);
-    io.emit('teacherOnline', { teacherId });
+
+    // Notify all clients with timestamp
+    io.emit('teacherOnline', {
+      teacherId,
+      timestamp: Date.now()
+    });
   });
 
   socket.on('stopLive', (teacherId) => {
@@ -99,25 +115,41 @@ io.on('connection', (socket) => {
       if (currentLiveTeacher === teacherId) {
         currentLiveTeacher = null;
       }
-      io.emit('teacherOffline', { teacherId });
+
+      // Also clear audio status when session ends
+      teacherAudioStatus.delete(teacherId);
+
+      // Notify all clients with timestamp
+      io.emit('teacherOffline', {
+        teacherId,
+        timestamp: Date.now()
+      });
     }
+
     if (currentTeacherId === teacherId) {
       socket.leave(`teacher-${teacherId}`);
       currentTeacherId = null;
-      isAudioActive = false; // Reset audio status
     }
   });
 
-  // NEW: Handle audio toggle events from teacher
-  socket.on('toggleAudio', (data) => {
-    console.log('Teacher toggled audio:', data.teacherId, data.enabled);
-    isAudioActive = data.enabled;
+  // MODIFIED: standardize on audioToggle for both incoming and outgoing events
+  socket.on('audioToggle', (data) => {
+    console.log('Teacher audio toggle event received:', data.teacherId, data.enabled);
 
-    // Broadcast to students that the teacher has toggled audio
+    // Store audio status separately from live status
+    teacherAudioStatus.set(data.teacherId, data.enabled);
+
+    // Broadcast to all students in the teacher's room
     socket.broadcast.to(`teacher-${data.teacherId}`).emit('audioToggle', {
       teacherId: data.teacherId,
       enabled: data.enabled
     });
+  });
+
+  // For backwards compatibility - redirect to standardized event
+  socket.on('toggleAudio', (data) => {
+    console.log('Received deprecated toggleAudio event, forwarding to audioToggle');
+    socket.emit('audioToggle', data);
   });
 
   // Handle audio data from teacher
@@ -145,14 +177,19 @@ io.on('connection', (socket) => {
       liveTeachers.get(teacherId).add(socket);
       isStudent = true;
       currentTeacherId = teacherId;
-      // Send a single teacherOnline event to the joining student
-      socket.emit('teacherOnline', { teacherId });
+
+      // Send a single teacherOnline event to the joining student with timestamp
+      socket.emit('teacherOnline', {
+        teacherId,
+        timestamp: Date.now()
+      });
 
       // Also send current audio status if available
-      if (isAudioActive) {
+      if (teacherAudioStatus.has(teacherId)) {
+        console.log('Sending current audio status to joining student:', teacherAudioStatus.get(teacherId));
         socket.emit('audioToggle', {
           teacherId: teacherId,
-          enabled: isAudioActive
+          enabled: teacherAudioStatus.get(teacherId)
         });
       }
     }
@@ -196,7 +233,15 @@ io.on('connection', (socket) => {
           if (currentLiveTeacher === currentTeacherId) {
             currentLiveTeacher = null;
           }
-          io.emit('teacherOffline', { teacherId: currentTeacherId });
+
+          // Also clear audio status when teacher disconnects
+          teacherAudioStatus.delete(currentTeacherId);
+
+          // Notify all clients with timestamp
+          io.emit('teacherOffline', {
+            teacherId: currentTeacherId,
+            timestamp: Date.now()
+          });
         }
       }
     }

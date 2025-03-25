@@ -7,6 +7,7 @@ export interface WhiteboardUpdate {
 
 export interface TeacherStatus {
   teacherId: string;
+  timestamp?: number; // Added timestamp for event ordering
 }
 
 export interface LiveError {
@@ -23,13 +24,19 @@ export interface SessionEndedData {
   hasAudio: boolean;
 }
 
+export interface AudioToggleData {
+  teacherId: string;
+  enabled: boolean;
+}
+
 export interface ServerToClientEvents {
   whiteboardUpdate: (data: WhiteboardUpdate) => void;
   teacherOnline: (data: TeacherStatus) => void;
   teacherOffline: (data: TeacherStatus) => void;
   liveError: (data: LiveError) => void;
   sessionEnded: (data: SessionEndedData) => void;
-  audioToggle: (data: { teacherId: string, enabled: boolean }) => void;
+  audioToggle: (data: AudioToggleData) => void;
+  audioAvailable: (data: { teacherId: string }) => void;
 }
 
 export interface ClientToServerEvents {
@@ -41,7 +48,7 @@ export interface ClientToServerEvents {
   leaveTeacherRoom: (teacherId: string) => void;
   audioData: (data: AudioData) => void;
   sessionEnded: (data: SessionEndedData) => void;
-  audioToggle: (data: { teacherId: string, enabled: boolean }) => void;
+  audioToggle: (data: AudioToggleData) => void;
 }
 
 export type TypedSocket = Socket<ServerToClientEvents, ClientToServerEvents>;

@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
 import { io, Socket } from 'socket.io-client';
-import { WhiteboardUpdate, TeacherStatus, SessionEndedData } from '../../types/socket';
+import { WhiteboardUpdate, TeacherStatus, SessionEndedData, AudioToggleData } from '../../types/socket';
 import { StrokeRecorder } from '../../lib/strokeRecorder';
 import { AudioRecorder } from '../../lib/audioRecorder';
 import { uploadSessionRecording } from '../../lib/cloudinary';
@@ -11,14 +11,23 @@ let socket: Socket | null = null;
 
 const initializeSocket = () => {
   if (!socket) {
+    console.log('Initializing socket connection...');
     socket = io(import.meta.env.VITE_API_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
-      reconnectionAttempts: 5,
+      reconnectionAttempts: 10, // Increased from 5
       reconnectionDelay: 1000,
       timeout: 60000,
       withCredentials: true
     });
+
+    // Debug socket connection events
+    socket.on('connect', () => console.log('Socket connected'));
+    socket.on('disconnect', (reason) => console.log('Socket disconnected:', reason));
+    socket.on('reconnect', (attemptNumber) => console.log('Socket reconnected after', attemptNumber, 'attempts'));
+    socket.on('reconnect_attempt', (attemptNumber) => console.log('Socket reconnection attempt:', attemptNumber));
+    socket.on('reconnect_error', (error) => console.log('Socket reconnection error:', error));
+    socket.on('reconnect_failed', () => console.log('Socket reconnection failed'));
   }
   return socket;
 };
@@ -36,10 +45,15 @@ const StudentWhiteboard: React.FC = () => {
   const [sessionSaved, setSessionSaved] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
 
+  // New refs for handling event ordering and preventing duplicate processing
+  const lastStatusTimestamp = useRef<number>(Date.now());
+  const isProcessingOffline = useRef<boolean>(false);
+
   const handleWhiteboardUpdate = useCallback(async (data: WhiteboardUpdate) => {
     if (!canvasRef.current) return;
 
     try {
+      console.log('Received whiteboard update');
       lastUpdateRef.current = data.whiteboardData;
       await canvasRef.current.clearCanvas();
       if (data.whiteboardData && data.whiteboardData !== '[]') {
@@ -156,6 +170,15 @@ const StudentWhiteboard: React.FC = () => {
     const socket = initializeSocket();
 
     const handleTeacherOnline = (data: TeacherStatus) => {
+      console.log('Teacher online event received:', data.teacherId);
+
+      // Store the timestamp of this event
+      if (data.timestamp) {
+        lastStatusTimestamp.current = data.timestamp;
+      } else {
+        lastStatusTimestamp.current = Date.now();
+      }
+
       setConnectionError(null);
       setIsTeacherLive(true);
       setCurrentTeacherId(data.teacherId);
@@ -167,6 +190,7 @@ const StudentWhiteboard: React.FC = () => {
 
     const handleSessionEnded = async (data: SessionEndedData) => {
       if (currentTeacherId === data.teacherId) {
+        console.log('Session ended event received, hasAudio:', data.hasAudio);
         setHasSessionAudio(data.hasAudio);
         // Don't save here - wait for the teacherOffline event
       }
@@ -175,16 +199,23 @@ const StudentWhiteboard: React.FC = () => {
     const handleTeacherOffline = async (data: TeacherStatus) => {
       console.log('Teacher offline event received:', data.teacherId, 'Current:', currentTeacherId);
 
-      // Only save if this is the teacher we're currently viewing
-      // and we have some whiteboard data
-      if (currentTeacherId === data.teacherId &&
-          lastUpdateRef.current !== '[]' &&
-          !sessionSaved) {
-        await saveSession();
+      // If we're already processing an offline event, don't start another one
+      if (isProcessingOffline.current) {
+        console.log('Already processing an offline event, skipping');
+        return;
       }
 
-      // Only clear the UI if we're currently viewing this teacher
-      if (currentTeacherId === data.teacherId) {
+      // Skip if we're not viewing this teacher
+      if (currentTeacherId !== data.teacherId) {
+        console.log('Not the current teacher, skipping offline handling');
+        return;
+      }
+
+      // Skip if no whiteboard data or already saved
+      if (lastUpdateRef.current === '[]' || sessionSaved || !currentTeacherId) {
+        console.log('No data to save, already saved, or no current teacher');
+
+        // Still update the UI state
         setIsTeacherLive(false);
         setCurrentTeacherId(null);
         setIsRecording(false);
@@ -192,17 +223,51 @@ const StudentWhiteboard: React.FC = () => {
         if (canvasRef.current) {
           canvasRef.current.clearCanvas();
         }
+        return;
+      }
+
+      // Proceed with saving
+      console.log('Processing offline event and saving session');
+      isProcessingOffline.current = true;
+
+      try {
+        await saveSession();
+      } catch (error) {
+        console.error('Error saving session:', error);
+      } finally {
+        // Update UI state
+        setIsTeacherLive(false);
+        setCurrentTeacherId(null);
+        setIsRecording(false);
+        sessionStartTimeRef.current = null;
+
+        if (canvasRef.current) {
+          canvasRef.current.clearCanvas();
+        }
+
+        // Mark as no longer processing
+        isProcessingOffline.current = false;
       }
     };
 
-    const handleAudioToggle = (data: { teacherId: string, enabled: boolean }) => {
+    const handleAudioToggle = (data: AudioToggleData) => {
+      console.log('Audio toggle event received:', data);
+
       if (currentTeacherId === data.teacherId) {
         setIsRecording(data.enabled);
-        console.log('Teacher audio recording status changed:', data.enabled);
+        console.log('Teacher audio recording status changed to:', data.enabled);
+      }
+    };
+
+    const handleAudioAvailable = (data: { teacherId: string }) => {
+      if (currentTeacherId === data.teacherId) {
+        console.log('Audio available for teacher:', data.teacherId);
+        setHasSessionAudio(true);
       }
     };
 
     const handleConnect = () => {
+      console.log('Student socket connected');
       setConnectionError(null);
       socket.emit('checkTeacherStatus');
     };
@@ -220,12 +285,6 @@ const StudentWhiteboard: React.FC = () => {
       setConnectionError('Connection lost. Attempting to reconnect...');
     };
 
-    const handleAudioAvailable = (data: { teacherId: string }) => {
-      if (currentTeacherId === data.teacherId) {
-        setHasSessionAudio(true);
-      }
-    };
-
     socket.on('whiteboardUpdate', handleWhiteboardUpdate);
     socket.on('teacherOnline', handleTeacherOnline);
     socket.on('teacherOffline', handleTeacherOffline);
@@ -236,9 +295,11 @@ const StudentWhiteboard: React.FC = () => {
     socket.on('connect_error', handleConnectError);
     socket.on('disconnect', handleDisconnect);
 
+    console.log('Checking teacher status on mount...');
     socket.emit('checkTeacherStatus');
 
     return () => {
+      console.log('Cleaning up socket listeners');
       socket.off('whiteboardUpdate', handleWhiteboardUpdate);
       socket.off('teacherOnline', handleTeacherOnline);
       socket.off('teacherOffline', handleTeacherOffline);
@@ -250,6 +311,7 @@ const StudentWhiteboard: React.FC = () => {
       socket.off('disconnect', handleDisconnect);
 
       if (currentTeacherId) {
+        console.log('Leaving teacher room:', currentTeacherId);
         socket.emit('leaveTeacherRoom', currentTeacherId);
       }
     };

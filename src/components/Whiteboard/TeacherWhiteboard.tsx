@@ -177,12 +177,14 @@ const TeacherWhiteboard: React.FC = () => {
     try {
       audioRecorderRef.current.startRecording()
         .then(() => {
+          // Set local state first
           setIsAudioRecording(true);
           console.log('Audio recording started successfully');
 
-          // Emit event to notify students about audio recording state
+          // Then notify students about audio state change
           const userId = localStorage.getItem('userId');
           if (userId && socket) {
+            console.log('Emitting audioToggle event with enabled=true');
             socket.emit('audioToggle', {
               teacherId: userId,
               enabled: true
@@ -191,9 +193,11 @@ const TeacherWhiteboard: React.FC = () => {
         })
         .catch((err) => {
           console.error('Error in audio recording:', err);
+          // Don't set any error state to avoid disrupting the session
         });
     } catch (error) {
       console.error('Error initiating audio recording:', error);
+      // Don't propagate the error
     }
   };
 
@@ -204,19 +208,19 @@ const TeacherWhiteboard: React.FC = () => {
     }
 
     try {
-      const audioBlob = await audioRecorderRef.current.stopRecording();
-      setIsAudioRecording(false);
-      console.log('Stopped audio recording, blob size:', audioBlob.size);
-
-      // Emit event to notify students audio recording has stopped
+      // Notify students before stopping to prevent race conditions
       const userId = localStorage.getItem('userId');
-      if (userId && socket) {
+      if (userId && socket && isAudioRecording) {
+        console.log('Emitting audioToggle event with enabled=false');
         socket.emit('audioToggle', {
           teacherId: userId,
           enabled: false
         });
       }
 
+      const audioBlob = await audioRecorderRef.current.stopRecording();
+      setIsAudioRecording(false);
+      console.log('Stopped audio recording, blob size:', audioBlob.size);
       return audioBlob;
     } catch (error) {
       console.error('Error stopping audio recording:', error);
@@ -374,12 +378,14 @@ const TeacherWhiteboard: React.FC = () => {
       setIsLive(true);
       setShowStartModal(false);
 
+      console.log('Starting live session for teacher:', userId);
+
       // First, notify the server that the session is starting
       socket.emit('startLive', userId);
 
       // Short delay to ensure the socket event is processed first
       setTimeout(() => {
-        // Then start audio recording
+        // Then start audio recording (which will emit its own event)
         startAudioRecording();
 
         // Send initial canvas state
@@ -389,10 +395,11 @@ const TeacherWhiteboard: React.FC = () => {
             whiteboardData: JSON.stringify(paths)
           });
         }).catch(console.error);
-      }, 500);
+      }, 1000); // Increased delay to ensure events are processed in order
     }
   };
 
+  // Update confirmStopLive to ensure proper event ordering
   const confirmStopLive = async () => {
     const userId = localStorage.getItem('userId');
     const socket = initializeSocket();
@@ -404,7 +411,7 @@ const TeacherWhiteboard: React.FC = () => {
         hasAudio: isAudioRecording
       });
 
-      // Then, stop audio recording
+      // Then, stop audio recording which will also emit audioToggle event
       let audioBlob = null;
       if (isAudioRecording) {
         try {
@@ -434,7 +441,7 @@ const TeacherWhiteboard: React.FC = () => {
             // Finally, after all other events, stop the live session
             setTimeout(() => {
               socket.emit('stopLive', userId);
-            }, 500);
+            }, 1000); // Increased delay to ensure events are processed in order
           };
         } catch (error) {
           console.error('Error processing audio:', error);
@@ -446,7 +453,7 @@ const TeacherWhiteboard: React.FC = () => {
         // Add a short delay to ensure other events are processed first
         setTimeout(() => {
           socket.emit('stopLive', userId);
-        }, 500);
+        }, 1000); // Increased delay to ensure events are processed in order
       }
 
       // Clear all local states
