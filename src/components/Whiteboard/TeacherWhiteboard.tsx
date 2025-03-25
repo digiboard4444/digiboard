@@ -4,6 +4,21 @@ import { Play, X, Eraser, AlertCircle, RotateCcw, RotateCw, Paintbrush, Trash2, 
 import { io } from 'socket.io-client';
 import type { TypedSocket } from '../../types/socket';
 import { drawCircleBrush, drawDottedCircleBrush, StrokePoint, BrushOptions } from '../../lib/brushUtils';
+import {
+  COLORS,
+  STROKE_SIZES,
+  OPACITY_OPTIONS,
+  BRUSH_TYPES,
+  DEFAULT_DRAWING_STATE,
+  DrawingState,
+  handleColorChange,
+  handleSizeChange,
+  handleOpacityChange,
+  handleBrushTypeChange,
+  toggleEraser,
+  toggleDropdown,
+  setupClickOutsideHandler
+} from '../../lib/brushStylingUtils';
 
 let socket: TypedSocket | null = null;
 
@@ -21,65 +36,10 @@ const initializeSocket = () => {
   return socket;
 };
 
-// Stroke styles configuration
-const COLORS = [
-  { name: 'Black', value: '#000000' },
-  { name: 'Red', value: '#FF0000' },
-  { name: 'Blue', value: '#0000FF' },
-  { name: 'Green', value: '#008000' },
-  { name: 'Yellow', value: '#FFFF00' },
-  { name: 'Purple', value: '#800080' },
-  { name: 'Orange', value: '#FFA500' },
-];
-
-const STROKE_SIZES = [
-  { name: 'Tiny', value: 2 },
-  { name: 'Small', value: 4 },
-  { name: 'Medium', value: 6 },
-  { name: 'Large', value: 8 },
-  { name: 'X-Large', value: 12 },
-  { name: 'XX-Large', value: 16 },
-  { name: 'Huge', value: 24 },
-];
-
-const OPACITY_OPTIONS = [
-  { name: '10%', value: 0.1 },
-  { name: '25%', value: 0.25 },
-  { name: '50%', value: 0.5 },
-  { name: '75%', value: 0.75 },
-  { name: '100%', value: 1.0 },
-];
-
-// Simplified brush types - only circle and dotted circle
-const BRUSH_TYPES = [
-  { name: 'Circle', value: 'circle', icon: Circle, description: 'Round brush tip' },
-  { name: 'Dotted Circle', value: 'dotted-circle', icon: Circle, description: 'Dotted circular brush' },
-];
-
-interface DrawingState {
-  color: string;
-  strokeWidth: number;
-  opacity: number;
-  brushType: string;
-  isEraser: boolean;
-}
-
-// Define a type for path data with opacity
-interface StrokePathWithOpacity {
-  drawMode: boolean;
-  strokeColor: string;
-  strokeWidth: number;
-  paths: Array<{ x: number; y: number }>;
-  opacity: number; // Added opacity to each stroke
-}
-
 const TeacherWhiteboard: React.FC = () => {
   const canvasRef = useRef<ReactSketchCanvasRef | null>(null);
   const customCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const customCtxRef = useRef<CanvasRenderingContext2D | null>(null);
-
-  // Store all stroke paths with their individual properties including opacity
-  const pathsRef = useRef<StrokePathWithOpacity[]>([]);
 
   const [isLive, setIsLive] = useState(false);
   const [showStartModal, setShowStartModal] = useState(false);
@@ -87,38 +47,17 @@ const TeacherWhiteboard: React.FC = () => {
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
   const [error, setError] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
-  const [forceRender, setForceRender] = useState(0); // To force re-renders when needed
 
   // Drawing state
-  const [drawingState, setDrawingState] = useState<DrawingState>({
-    color: COLORS[0].value,
-    strokeWidth: STROKE_SIZES[2].value,
-    opacity: OPACITY_OPTIONS[4].value,
-    brushType: 'circle', // Default to circle brush
-    isEraser: false,
-  });
+  const [drawingState, setDrawingState] = useState<DrawingState>(DEFAULT_DRAWING_STATE);
 
   // Dropdown states
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
 
   // Custom stroke history for undo/redo
-  const [strokeHistory, setStrokeHistory] = useState<StrokePathWithOpacity[][]>([]);
-  const [redoStack, setRedoStack] = useState<StrokePathWithOpacity[][]>([]);
+  const [strokeHistory, setStrokeHistory] = useState<any[]>([]);
+  const [redoStack, setRedoStack] = useState<any[]>([]);
 
-  // Initialize custom canvas
-  useEffect(() => {
-    const canvas = document.createElement('canvas');
-    canvas.width = canvasSize.width;
-    canvas.height = canvasSize.height;
-
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      customCanvasRef.current = canvas;
-      customCtxRef.current = ctx;
-    }
-  }, [canvasSize]);
-
-  // Handle window resize
   useEffect(() => {
     const handleResize = () => {
       const container = document.getElementById('whiteboard-container');
@@ -134,54 +73,55 @@ const TeacherWhiteboard: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Handle drawing a new stroke
+  // Initialize custom canvas for specialized brushes
+  useEffect(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvasSize.width;
+    canvas.height = canvasSize.height;
+
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      customCanvasRef.current = canvas;
+      customCtxRef.current = ctx;
+    }
+  }, [canvasSize]);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    return setupClickOutsideHandler(setOpenDropdown);
+  }, []);
+
   const handleStroke = useCallback(async () => {
     if (isLive && canvasRef.current && socket) {
       try {
-        // Get the raw paths from the canvas
         const paths = await canvasRef.current.exportPaths();
         const userId = localStorage.getItem('userId');
 
-        // If there are new paths drawn, add them to our paths with opacity
-        if (paths.length > pathsRef.current.length) {
-          const newPaths = paths.slice(pathsRef.current.length);
-
-          // Add current opacity value to each new path
-          const pathsWithOpacity = newPaths.map(path => ({
-            ...path,
-            opacity: drawingState.opacity
-          }));
-
-          // Update our stored paths
-          pathsRef.current = [...pathsRef.current, ...pathsWithOpacity];
-
-          // Update stroke history for undo/redo
-          setStrokeHistory(prevHistory => [...prevHistory, pathsRef.current]);
-          setRedoStack([]);
-        }
+        // Update stroke history for undo/redo
+        setStrokeHistory(prevHistory => [...prevHistory, paths]);
+        setRedoStack([]);
 
         if (userId) {
           console.log('Sending whiteboard update');
-          // Send the paths with opacity to connected clients
           socket.emit('whiteboardUpdate', {
             teacherId: userId,
-            whiteboardData: JSON.stringify(pathsRef.current)
+            whiteboardData: JSON.stringify(paths)
           });
         }
       } catch (error) {
         console.error('Error handling stroke:', error);
       }
     }
-  }, [isLive, drawingState.opacity]);
+  }, [isLive]);
 
-  // Apply the appropriate brush based on the type and opacity
+  // Apply the appropriate brush based on the type
   const applyBrush = useCallback((point: StrokePoint) => {
     if (!customCtxRef.current) return;
 
     const options: BrushOptions = {
       color: drawingState.isEraser ? '#FFFFFF' : drawingState.color,
       size: drawingState.strokeWidth,
-      opacity: drawingState.opacity // Current opacity setting
+      opacity: drawingState.opacity
     };
 
     switch (drawingState.brushType) {
@@ -195,7 +135,6 @@ const TeacherWhiteboard: React.FC = () => {
     }
   }, [drawingState]);
 
-  // Socket connection and event handling
   useEffect(() => {
     const socket = initializeSocket();
     const userId = localStorage.getItem('userId');
@@ -238,7 +177,6 @@ const TeacherWhiteboard: React.FC = () => {
     };
   }, [isLive, handleStroke]);
 
-  // Session management functions
   const handleStartLive = () => {
     setError(null);
     setShowStartModal(true);
@@ -257,17 +195,11 @@ const TeacherWhiteboard: React.FC = () => {
       setShowStartModal(false);
       socket.emit('startLive', userId);
 
-      // Initialize paths with opacity
-      const initialPaths = await canvasRef.current.exportPaths();
-      pathsRef.current = initialPaths.map(path => ({
-        ...path,
-        opacity: 1.0 // Default full opacity for initial state
-      }));
-
       // Send initial canvas state
+      const paths = await canvasRef.current.exportPaths();
       socket.emit('whiteboardUpdate', {
         teacherId: userId,
-        whiteboardData: JSON.stringify(pathsRef.current)
+        whiteboardData: JSON.stringify(paths)
       });
     }
   };
@@ -283,8 +215,7 @@ const TeacherWhiteboard: React.FC = () => {
       if (canvasRef.current) {
         canvasRef.current.clearCanvas();
       }
-      // Reset all stored paths and history
-      pathsRef.current = [];
+      // Reset history
       setStrokeHistory([]);
       setRedoStack([]);
     }
@@ -295,9 +226,6 @@ const TeacherWhiteboard: React.FC = () => {
       await canvasRef.current.clearCanvas();
       const userId = localStorage.getItem('userId');
       const socket = initializeSocket();
-
-      // Clear all paths
-      pathsRef.current = [];
 
       if (userId) {
         socket.emit('whiteboardUpdate', {
@@ -312,130 +240,50 @@ const TeacherWhiteboard: React.FC = () => {
     }
   };
 
-  // Handle undo with opacity preservation
+  // Handle undo
   const handleUndo = async () => {
     if (canvasRef.current && strokeHistory.length > 0) {
       await canvasRef.current.undo();
 
-      // Update history and paths
+      // Update history
       const newHistory = [...strokeHistory];
-      const lastPaths = newHistory.pop() || [];
+      const lastPath = newHistory.pop();
       setStrokeHistory(newHistory);
-      setRedoStack(prev => [...prev, pathsRef.current]);
-
-      // Update current paths reference
-      pathsRef.current = lastPaths;
+      setRedoStack(prev => [...prev, lastPath]);
 
       // Send updated canvas state
+      const paths = await canvasRef.current.exportPaths();
       const userId = localStorage.getItem('userId');
       if (userId && socket) {
         socket.emit('whiteboardUpdate', {
           teacherId: userId,
-          whiteboardData: JSON.stringify(pathsRef.current)
+          whiteboardData: JSON.stringify(paths)
         });
       }
     }
   };
 
-  // Handle redo with opacity preservation
+  // Handle redo
   const handleRedo = async () => {
     if (canvasRef.current && redoStack.length > 0) {
       await canvasRef.current.redo();
 
-      // Update history and paths
+      // Update history
       const newRedoStack = [...redoStack];
-      const pathsToRestore = newRedoStack.pop() || [];
+      const pathToRestore = newRedoStack.pop();
       setRedoStack(newRedoStack);
-      setStrokeHistory(prev => [...prev, pathsRef.current]);
-
-      // Update current paths reference
-      pathsRef.current = pathsToRestore;
+      setStrokeHistory(prev => [...prev, pathToRestore]);
 
       // Send updated canvas state
+      const paths = await canvasRef.current.exportPaths();
       const userId = localStorage.getItem('userId');
       if (userId && socket) {
         socket.emit('whiteboardUpdate', {
           teacherId: userId,
-          whiteboardData: JSON.stringify(pathsRef.current)
+          whiteboardData: JSON.stringify(paths)
         });
       }
     }
-  };
-
-  // Toggle dropdown menus
-  const toggleDropdown = (menu: string) => {
-    if (openDropdown === menu) {
-      setOpenDropdown(null);
-    } else {
-      setOpenDropdown(menu);
-    }
-  };
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (openDropdown && !(e.target as Element).closest('.dropdown-container')) {
-        setOpenDropdown(null);
-      }
-    };
-
-    document.addEventListener('click', handleClickOutside);
-    return () => {
-      document.removeEventListener('click', handleClickOutside);
-    };
-  }, [openDropdown]);
-
-  // Drawing style handlers
-  const handleColorChange = (color: string) => {
-    setDrawingState(prev => ({
-      ...prev,
-      color,
-      isEraser: false
-    }));
-    setOpenDropdown(null);
-  };
-
-  const handleSizeChange = (size: number) => {
-    setDrawingState(prev => ({
-      ...prev,
-      strokeWidth: size
-    }));
-    setOpenDropdown(null);
-  };
-
-  const handleOpacityChange = (opacity: number) => {
-    setDrawingState(prev => ({
-      ...prev,
-      opacity
-    }));
-    setOpenDropdown(null);
-    // Force a re-render to update UI
-    setForceRender(prev => prev + 1);
-  };
-
-  const handleBrushTypeChange = (type: string) => {
-    setDrawingState(prev => ({
-      ...prev,
-      brushType: type,
-      isEraser: false
-    }));
-    setOpenDropdown(null);
-  };
-
-  const toggleEraser = () => {
-    setDrawingState(prev => ({
-      ...prev,
-      isEraser: !prev.isEraser
-    }));
-  };
-
-  // Helper function to manage path rendering (not directly rendered)
-  const renderPathsWithOpacity = () => {
-    if (!canvasRef.current || !pathsRef.current.length) return;
-
-    // This is a placeholder for custom rendering logic
-    // In an actual implementation, we might use a Canvas API approach instead
-    console.log(`Rendering ${pathsRef.current.length} paths with individual opacity`);
   };
 
   return (
@@ -453,7 +301,7 @@ const TeacherWhiteboard: React.FC = () => {
                   <Trash2 size={20} /> Clear
                 </button>
                 <button
-                  onClick={toggleEraser}
+                  onClick={() => toggleEraser(setDrawingState)}
                   className={`flex items-center gap-2 px-4 py-2 rounded-md ${
                     drawingState.isEraser
                       ? 'bg-blue-600 text-white'
@@ -524,10 +372,10 @@ const TeacherWhiteboard: React.FC = () => {
             {/* Color Selector */}
             <div className="relative dropdown-container" onClick={(e) => e.stopPropagation()}>
               <button
-                onClick={() => toggleDropdown('color')}
+                onClick={() => toggleDropdown('color', openDropdown, setOpenDropdown)}
                 className="flex items-center gap-2 px-3 py-2 rounded hover:bg-gray-100"
                 style={{ backgroundColor: drawingState.isEraser ? 'white' : drawingState.color,
-                        color: drawingState.isEraser || drawingState.color === '#FFFFFF' || drawingState.color === '#FFFF00' ? 'black' : 'white' }}
+                         color: drawingState.isEraser || drawingState.color === '#FFFFFF' || drawingState.color === '#FFFF00' ? 'black' : 'white' }}
               >
                 <div className="w-4 h-4 rounded-full" style={{
                   backgroundColor: drawingState.isEraser ? 'white' : drawingState.color,
@@ -543,7 +391,7 @@ const TeacherWhiteboard: React.FC = () => {
                     {COLORS.map((color) => (
                       <button
                         key={color.value}
-                        onClick={() => handleColorChange(color.value)}
+                        onClick={() => handleColorChange(color.value, setDrawingState, setOpenDropdown)}
                         className="w-10 h-10 rounded-full flex items-center justify-center"
                         style={{ backgroundColor: color.value, border: '1px solid #ccc' }}
                         title={color.name}
@@ -561,7 +409,7 @@ const TeacherWhiteboard: React.FC = () => {
             {/* Size Selector */}
             <div className="relative dropdown-container" onClick={(e) => e.stopPropagation()}>
               <button
-                onClick={() => toggleDropdown('size')}
+                onClick={() => toggleDropdown('size', openDropdown, setOpenDropdown)}
                 className="flex items-center gap-2 px-3 py-2 rounded hover:bg-gray-100"
               >
                 <Circle size={drawingState.strokeWidth} />
@@ -575,7 +423,7 @@ const TeacherWhiteboard: React.FC = () => {
                     {STROKE_SIZES.map((size) => (
                       <button
                         key={size.value}
-                        onClick={() => handleSizeChange(size.value)}
+                        onClick={() => handleSizeChange(size.value, setDrawingState, setOpenDropdown)}
                         className={`flex items-center gap-2 px-3 py-2 rounded hover:bg-gray-100 ${
                           drawingState.strokeWidth === size.value ? 'bg-gray-100' : ''
                         }`}
@@ -592,7 +440,7 @@ const TeacherWhiteboard: React.FC = () => {
             {/* Opacity Selector */}
             <div className="relative dropdown-container" onClick={(e) => e.stopPropagation()}>
               <button
-                onClick={() => toggleDropdown('opacity')}
+                onClick={() => toggleDropdown('opacity', openDropdown, setOpenDropdown)}
                 className="flex items-center gap-2 px-3 py-2 rounded hover:bg-gray-100"
               >
                 <div className="w-4 h-4 bg-black rounded-full" style={{ opacity: drawingState.opacity }}></div>
@@ -606,7 +454,7 @@ const TeacherWhiteboard: React.FC = () => {
                     {OPACITY_OPTIONS.map((option) => (
                       <button
                         key={option.value}
-                        onClick={() => handleOpacityChange(option.value)}
+                        onClick={() => handleOpacityChange(option.value, setDrawingState, setOpenDropdown)}
                         className={`flex items-center gap-2 px-3 py-2 rounded hover:bg-gray-100 ${
                           drawingState.opacity === option.value ? 'bg-gray-100' : ''
                         }`}
@@ -623,7 +471,7 @@ const TeacherWhiteboard: React.FC = () => {
             {/* Brush Type Selector */}
             <div className="relative dropdown-container" onClick={(e) => e.stopPropagation()}>
               <button
-                onClick={() => toggleDropdown('brush')}
+                onClick={() => toggleDropdown('brush', openDropdown, setOpenDropdown)}
                 className="flex items-center gap-2 px-3 py-2 rounded hover:bg-gray-100"
               >
                 <Paintbrush size={16} />
@@ -635,17 +483,17 @@ const TeacherWhiteboard: React.FC = () => {
                 <div className="absolute z-10 top-full left-0 mt-1 p-2 bg-white rounded-lg shadow-lg border border-gray-200">
                   <div className="flex flex-col gap-2 w-48">
                     {BRUSH_TYPES.map((brush) => {
-                      const IconComponent = brush.icon;
+                      // Use Circle for all brush types since they're both circles
                       return (
                         <button
                           key={brush.value}
-                          onClick={() => handleBrushTypeChange(brush.value)}
+                          onClick={() => handleBrushTypeChange(brush.value, setDrawingState, setOpenDropdown)}
                           className={`flex items-center justify-between px-3 py-2 rounded hover:bg-gray-100 ${
                             drawingState.brushType === brush.value ? 'bg-gray-100' : ''
                           }`}
                         >
                           <div className="flex items-center gap-2">
-                            <IconComponent size={16} />
+                            <Circle size={16} />
                             <span>{brush.name}</span>
                           </div>
                           <span className="text-xs text-gray-500">{brush.description}</span>
@@ -659,8 +507,7 @@ const TeacherWhiteboard: React.FC = () => {
           </div>
         )}
 
-        <div id="whiteboard-container" className="border rounded-lg overflow-hidden bg-white relative">
-          {/* Main drawing canvas */}
+        <div id="whiteboard-container" className="border rounded-lg overflow-hidden bg-white">
           <ReactSketchCanvas
             ref={canvasRef}
             strokeWidth={drawingState.strokeWidth}
@@ -672,17 +519,12 @@ const TeacherWhiteboard: React.FC = () => {
             withTimestamp={false}
             allowOnlyPointerType="all"
             lineCap="round"
+            style={{
+              opacity: drawingState.opacity,
+            }}
             className="touch-none"
             onStroke={handleStroke}
             onChange={handleStroke}
-          />
-
-          {/* Hidden canvas for custom rendering if needed */}
-          <canvas
-            ref={customCanvasRef}
-            className="hidden"
-            width={canvasSize.width}
-            height={canvasSize.height}
           />
         </div>
       </div>
