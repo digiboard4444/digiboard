@@ -3,6 +3,7 @@
 // 1. Match canvas dimensions with teacher's whiteboard
 // 2. Add aspect ratio preservation
 // 3. Fix path loading to handle different canvas sizes
+// 4. Add support for dotted lines
 
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { ReactSketchCanvas, ReactSketchCanvasRef } from 'react-sketch-canvas';
@@ -32,6 +33,71 @@ const initializeSocket = () => {
 const DEFAULT_CANVAS_WIDTH = 800;
 const DEFAULT_CANVAS_HEIGHT = 600;
 
+// Canvas wrapper component for handling dotted lines in student view
+const StudentCanvasWrapper = ({
+  children
+}: {
+  children: React.ReactNode
+}) => {
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  // Function to apply dotted line styling
+  const applyDottedLineStyles = useCallback(() => {
+    if (wrapperRef.current) {
+      const svgElement = wrapperRef.current.querySelector('svg');
+      if (svgElement) {
+        const pathElements = svgElement.querySelectorAll('path');
+
+        pathElements.forEach(path => {
+          // Check if the path has a data attribute that marks it as a dotted line
+          if (path.getAttribute('data-brush-type') === 'dotted-line') {
+            const width = path.getAttribute('data-stroke-width') || '4';
+            path.style.strokeDasharray = `${width}px, ${width}px`;
+          }
+        });
+      }
+    }
+  }, []);
+
+  // Apply styling when paths might be loaded
+  useEffect(() => {
+    // Use a mutation observer to detect when new paths are added to the SVG
+    if (wrapperRef.current) {
+      const observer = new MutationObserver((mutations) => {
+        // Check if any of the mutations involve path elements
+        const hasPathChanges = mutations.some(mutation => {
+          return Array.from(mutation.addedNodes).some(node =>
+            node.nodeName === 'path' ||
+            (node instanceof Element && node.querySelector('path'))
+          );
+        });
+
+        if (hasPathChanges) {
+          // Apply dotted line styling if paths were added
+          applyDottedLineStyles();
+        }
+      });
+
+      // Start observing the wrapper for changes to its child elements
+      observer.observe(wrapperRef.current, {
+        childList: true,
+        subtree: true
+      });
+
+      // Also apply styles immediately in case paths are already loaded
+      applyDottedLineStyles();
+
+      return () => observer.disconnect();
+    }
+  }, [applyDottedLineStyles]);
+
+  return (
+    <div ref={wrapperRef}>
+      {children}
+    </div>
+  );
+};
+
 const StudentWhiteboard: React.FC = () => {
   const canvasRef = useRef<ReactSketchCanvasRef | null>(null);
   const [isTeacherLive, setIsTeacherLive] = useState(false);
@@ -44,6 +110,7 @@ const StudentWhiteboard: React.FC = () => {
   const [connectionError, setConnectionError] = useState<string | null>(null);
 
   // Modified to handle scale differences between teacher and student canvas
+  // and to preserve path attributes for dotted lines
   const handleWhiteboardUpdate = useCallback(async (data: WhiteboardUpdate) => {
     if (!canvasRef.current) return;
 
@@ -53,7 +120,35 @@ const StudentWhiteboard: React.FC = () => {
 
       if (data.whiteboardData && data.whiteboardData !== '[]') {
         const paths = JSON.parse(data.whiteboardData);
+
+        // Load paths into the canvas
         await canvasRef.current.loadPaths(paths);
+
+        // Apply path attributes for dotted lines
+        setTimeout(() => {
+          const svgElement = document.querySelector('#student-whiteboard-container svg');
+          if (svgElement) {
+            const pathElements = svgElement.querySelectorAll('path');
+
+            // Add attributes to paths based on the data received
+            paths.forEach((path: any, index: number) => {
+              if (index < pathElements.length) {
+                const pathElement = pathElements[index];
+
+                // Check if this path has brushType metadata
+                if (path.brushType) {
+                  pathElement.setAttribute('data-brush-type', path.brushType);
+
+                  if (path.brushType === 'dotted-line') {
+                    const strokeWidth = path.strokeWidth || 4;
+                    pathElement.setAttribute('data-stroke-width', strokeWidth.toString());
+                    pathElement.style.strokeDasharray = `${strokeWidth}px, ${strokeWidth}px`;
+                  }
+                }
+              }
+            });
+          }
+        }, 50); // Small delay to ensure paths are rendered
       }
     } catch (error) {
       console.error('Error updating whiteboard:', error);
@@ -245,27 +340,29 @@ const StudentWhiteboard: React.FC = () => {
             height: '100%',
             position: 'relative'
           }}>
-            <ReactSketchCanvas
-              ref={canvasRef}
-              strokeWidth={4}
-              strokeColor="black"
-              width="100%"
-              height="100%"
-              style={{
-                pointerEvents: 'none',
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                right: 0,
-                bottom: 0
-              }}
-              canvasColor="white"
-              exportWithBackgroundImage={false}
-              withTimestamp={false}
-              allowOnlyPointerType="all"
-              className="touch-none"
-              preserveAspectRatio="xMidYMid meet"
-            />
+            <StudentCanvasWrapper>
+              <ReactSketchCanvas
+                ref={canvasRef}
+                strokeWidth={4}
+                strokeColor="black"
+                width="100%"
+                height="100%"
+                style={{
+                  pointerEvents: 'none',
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0
+                }}
+                canvasColor="white"
+                exportWithBackgroundImage={false}
+                withTimestamp={false}
+                allowOnlyPointerType="all"
+                className="touch-none"
+                preserveAspectRatio="xMidYMid meet"
+              />
+            </StudentCanvasWrapper>
           </div>
         </div>
       </div>

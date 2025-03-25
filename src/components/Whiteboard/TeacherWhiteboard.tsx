@@ -138,6 +138,29 @@ const TeacherWhiteboard: React.FC = () => {
         const paths = await canvasRef.current.exportPaths();
         const userId = localStorage.getItem('userId');
 
+        // Add brush type and stroke width information to each path
+        const svgElement = document.querySelector('#whiteboard-container svg');
+        if (svgElement) {
+          const pathElements = svgElement.querySelectorAll('path');
+
+          // Match path elements with exported paths and add brush type info
+          paths.forEach((path: any, index: number) => {
+            if (index < pathElements.length) {
+              const pathElement = pathElements[index];
+              const brushType = pathElement.getAttribute('data-brush-type');
+              const strokeWidth = pathElement.getAttribute('data-stroke-width');
+
+              if (brushType) {
+                path.brushType = brushType;
+              }
+
+              if (strokeWidth) {
+                path.strokeWidth = parseInt(strokeWidth, 10);
+              }
+            }
+          });
+        }
+
         // Update stroke history for undo/redo
         setStrokeHistory(prevHistory => [...prevHistory, paths]);
         setRedoStack([]);
